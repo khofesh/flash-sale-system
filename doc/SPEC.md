@@ -82,7 +82,7 @@ flowchart LR
 | **Order Orchestrator** | Node.js worker                                     | Reads the reservations stream, persists orders, and drives the saga state machine.                                          | N consumers in a Redis consumer group |
 | **Payment service**    | Node.js worker                                     | Mock charge with configurable latency and failure rate. Idempotent on `orderId`.                                            | N consumers on the SQS queue          |
 | **Shipping service**   | Node.js worker                                     | Mock shipment creation. Idempotent on `orderId`.                                                                            | N consumers on the SQS queue          |
-| **Message broker**     | SQS API, served locally by **ElasticMQ** (see §10) | Queues between saga participants, with DLQs.                                                                                | —                                     |
+| **Message broker**     | SQS API, served locally by **Floci** (see §10) | Queues between saga participants, with DLQs.                                                                                | —                                     |
 
 ### 3.3 Design decisions
 
@@ -292,7 +292,7 @@ interface Envelope<T> {
 
 - **Delivery:** at-least-once. Each consumer records `messageId` in `processed_messages` in the same transaction as its side effect.
 - **Retries:** SQS visibility timeout 30 s, `maxReceiveCount` 5, then a per-queue **DLQ**. DLQ depth is exposed as a metric.
-- **Broker abstraction:** the code depends on a `MessageBus` interface (`publish`, `subscribe`). Adapters: `SqsBus` (AWS SDK v3 pointed at ElasticMQ or real SQS) and `InMemoryBus` (unit tests).
+- **Broker abstraction:** the code depends on a `MessageBus` interface (`publish`, `subscribe`). Adapters: `SqsBus` (AWS SDK v3 pointed at Floci, ElasticMQ or real SQS) and `InMemoryBus` (unit tests).
 
 ---
 
@@ -347,14 +347,15 @@ A single page, React 18 + Vite + TypeScript, with no UI framework requirement.
 
 ## 10. Local infrastructure and the LocalStack question
 
-**Decision: use ElasticMQ for SQS. Don't depend on LocalStack.**
+**Decision: use Floci (`floci/floci`, pinned to an exact version such as `2.4.0`) for SQS. Don't depend on LocalStack. ElasticMQ is the fallback.**
 
-- Since **March 2026**, LocalStack merged its Community and Pro images. `localstack/localstack:latest` now **requires an account and `LOCALSTACK_AUTH_TOKEN`**. The free **Hobby** tier is limited to **non-commercial use**. A job-application take-home sits in a grey area, and reviewers would need to sign up just to run the project.
-- Pinning an old community image (e.g. `localstack/localstack:4.x`) still works without a token, but it is frozen and unmaintained. That's fine as a fallback, but not something to build on.
-- **ElasticMQ** (`softwaremill/elasticmq-native`) implements the SQS API, including DLQs, visibility timeouts and FIFO queues. It is Apache-2.0 licensed, needs no account, starts in under a second, and queues are declared in `elasticmq.conf`. The same AWS SDK v3 code runs against real SQS by changing only `SQS_ENDPOINT`.
-- Only SQS is needed. Step Functions or EventBridge would replace the orchestrator, but they add infrastructure without showing more design skill.
+- Since **March 2026**, LocalStack merged its Community and Pro images. `localstack/localstack:latest` now **requires an account and `LOCALSTACK_AUTH_TOKEN`**. The free **Hobby** tier is limited to **non-commercial use**. A job-application take-home sits in a grey area, and reviewers would need to sign up just to run the project. Pinning an old community image (`4.x`) works without a token but is frozen.
+- **Floci** is an MIT-licensed AWS emulator that needs no account and no token. It runs on the same port as LocalStack (`4566`), starts in milliseconds and uses about 13 MiB of memory when idle. Its SQS emulation covers everything the saga needs: standard and FIFO queues, a `RedrivePolicy` with `maxReceiveCount` (DLQs), visibility timeout and `ChangeMessageVisibility`, long polling (`WaitTimeSeconds` up to 20) and batch send/delete. It also emulates SNS and Step Functions if the design ever moves fan-out or orchestration onto AWS-managed services. There's a web console at `http://localhost:4566/_floci/ui` for inspecting queues during the demo.
+- **Risks, and how we limit them:** Floci is a young project that releases several times a month (2.0 → 2.4 between Sep and Oct 2026), and its compatibility claims come from the vendor. So we (a) **pin an exact image tag**, never `latest`, (b) only use the plain SQS API through AWS SDK v3, and (c) cover the queue behaviour we depend on (DLQ after N receives, redelivery after visibility timeout) in integration tests. If Floci misbehaves, switching to **ElasticMQ** (`softwaremill/elasticmq-native`, an SQS-only emulator, Apache-2.0, mature) or to real SQS only requires changing `SQS_ENDPOINT`.
+- **Queue setup:** Floci has no queue config file, so a one-shot `queue-init` compose service creates the queues and DLQs with `CreateQueue` and `SetQueueAttributes` (both safe to re-run) before the workers start (`depends_on: condition: service_completed_successfully`).
+- Only SQS is needed. Step Functions would replace the orchestrator, but it adds infrastructure without showing more design skill, and it hides the saga logic that reviewers want to see.
 
-`docker-compose.yml` services: `nginx`, `api` (×4 via `deploy.replicas`), `orchestrator` (×2), `payment` (×2), `shipping` (×1), `redis`, `postgres`, `elasticmq`, `web`.
+`docker-compose.yml` services: `nginx`, `api` (×4 via `deploy.replicas`), `orchestrator` (×2), `payment` (×2), `shipping` (×1), `redis`, `postgres`, `floci` (port 4566), `queue-init` (one-shot), `web`.
 
 ---
 
@@ -375,7 +376,7 @@ A single page, React 18 + Vite + TypeScript, with no UI framework requirement.
 ├── infra/
 │   ├── docker-compose.yml
 │   ├── nginx.conf
-│   ├── elasticmq.conf
+│   ├── init-queues.ts  queue + DLQ bootstrap (queue-init service)
 │   └── migrations/     SQL
 ├── stress/             k6 scripts
 ├── doc/                idea.md, SPEC.md, architecture diagram
@@ -399,13 +400,14 @@ Tooling: pnpm workspaces, TypeScript (strict), ESLint and Prettier, Vitest, Test
 - Saga state machine: every legal transition, rejection of illegal ones, and compensation paths (payment fail → release; shipping fail → refund → release; late payment success after cancel → refund).
 - Response mapping from reserve results to HTTP codes.
 
-### 12.2 Integration tests (Vitest + Testcontainers: Redis, Postgres, ElasticMQ)
+### 12.2 Integration tests (Vitest + Testcontainers: Redis, Postgres, Floci)
 
 - The reserve Lua script: happy path, duplicate user, sold out, outside the window, release idempotency.
 - **Concurrency:** fire 1,000 parallel `reserve` calls for stock = 100 with 1,000 distinct users → exactly 100 `RESERVED` and 900 `SOLD_OUT`, stock = 0.
 - **Same user hammering:** 500 parallel calls for one user → exactly 1 `RESERVED`.
 - API (Fastify `inject`): every endpoint and response code from §6.
 - End-to-end saga with `PAYMENT_FAILURE_RATE=1` → order CANCELLED, stock restored, user can buy again.
+- **Broker contract** (runs against Floci, and must pass unchanged on ElasticMQ): a message that is not deleted comes back after the visibility timeout; after `maxReceiveCount` receives it lands in the DLQ; batch send/delete work.
 - Orchestrator crash simulation: consume without ack, kill it, start a new consumer → order persisted exactly once.
 
 ### 12.3 Stress tests (k6, against the full docker compose stack)
@@ -434,15 +436,15 @@ After every run, `stress/verify.ts` queries Postgres and Redis and asserts:
 ## 14. Delivery milestones
 
 1. **Core (enough to meet the brief):** API, Redis Lua reserve, Postgres persistence via the stream, React page, unit and integration tests, spike stress test. _Payment is simulated as "instant success" here._
-2. **Saga:** ElasticMQ, payment and shipping workers, compensation, timeout sweeper, DLQs, saga tests.
+2. **Saga:** Floci (SQS), payment and shipping workers, compensation, timeout sweeper, DLQs, saga tests.
 3. **Hardening:** rate limiting, sold-out short-circuit, metrics, chaos stress test, Redis rebuild job, README polish.
 
 Milestone 1 alone satisfies `idea.md`. Milestones 2–3 go beyond it and show the fault-tolerance thinking. Cut scope from the end if time is short.
 
 ---
 
-## 15. Open questions
+## 15. Decisions (resolved open questions)
 
-1. Should a user whose payment failed be allowed to retry? _Default in this spec: yes, while stock remains._
-2. Should "secured" mean _reserved_ or _paid_? _Default: reserved (counted from the moment of the Redis decision), with payment status shown separately._
-3. Is a waiting-room or virtual queue in front of the API (e.g. a token bucket that admits N users/s) wanted, or is per-IP rate limiting enough? _Default: rate limiting only. The waiting room is listed as future work._
+1. **Retry after a failed payment:** yes. The unit is released and the user may buy again while stock remains.
+2. **Meaning of "secured":** *reserved*, counted from the moment of the Redis decision. Payment status is shown separately.
+3. **Admission control:** per-IP rate limiting only. A waiting room or virtual queue is future work.
