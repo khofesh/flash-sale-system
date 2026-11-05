@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import Fastify from 'fastify';
-import type { HelloHop, HelloStatus } from '@fss/core';
+import { HELLO_STREAM, type HelloHop, type HelloStatus } from '@fss/core';
 import type { Logger, Pool, Redis } from '@fss/infra';
-
-export const HELLO_STREAM = 'hello:stream';
 
 interface BuildAppDeps {
   redis: Redis;
@@ -112,7 +110,7 @@ export function buildApp({ redis, pool, logger }: BuildAppDeps) {
         },
       },
     },
-    async (request) => {
+    async (request, reply) => {
       const { id } = request.params;
       const result = await pool.query<HelloRow>(
         `SELECT id, name, hops, status, created_at, updated_at
@@ -123,7 +121,8 @@ export function buildApp({ redis, pool, logger }: BuildAppDeps) {
 
       const row = result.rows[0];
       if (!row) {
-        return { id, status: 'QUEUED', hops: [] };
+        // Not persisted yet (briefly normal right after POST) or never arrived.
+        return reply.code(404).send({ code: 'NOT_FOUND', id });
       }
 
       return {

@@ -44,19 +44,6 @@ export async function initQueues(client: SQSClient): Promise<InitQueuesResult[]>
       }),
     });
 
-    await client.send(
-      new SetQueueAttributesCommand({
-        QueueUrl: url,
-        Attributes: {
-          VisibilityTimeout: VISIBILITY_TIMEOUT_SECONDS,
-          RedrivePolicy: JSON.stringify({
-            deadLetterTargetArn: deadLetterQueueArn,
-            maxReceiveCount: MAX_RECEIVE_COUNT,
-          }),
-        },
-      }),
-    );
-
     results.push({ name: definition.name, url, deadLetterQueueUrl });
   }
 

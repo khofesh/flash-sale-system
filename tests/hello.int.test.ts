@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { GenericContainer, Wait, type StartedTestContainer } from 'testcontainers';
 import { RedisContainer } from '@testcontainers/redis';
@@ -33,6 +34,7 @@ describe('hello walking skeleton', () => {
   let pool: Pool;
   let logger: Logger;
   let app: ReturnType<typeof buildApp>;
+  let bus: SqsBus;
   const stops: StopFn[] = [];
 
   beforeAll(async () => {
@@ -53,7 +55,7 @@ describe('hello walking skeleton', () => {
       `redis://${redisContainer.getHost()}:${redisContainer.getMappedPort(6379)}`,
     );
     pool = createPgPool(postgresContainer.getConnectionUri());
-    logger = createLogger('integration', 'silent');
+    logger = createLogger('integration', process.env.INT_LOG ?? 'silent');
 
     const sqsClient = createSqsClient({
       endpoint: `http://${flociContainer.getHost()}:${flociContainer.getMappedPort(4566)}`,
@@ -63,7 +65,7 @@ describe('hello walking skeleton', () => {
     });
     await initQueues(sqsClient);
 
-    const bus = new SqsBus(sqsClient, logger);
+    bus = new SqsBus(sqsClient, logger);
     app = buildApp({ redis, pool, logger });
     await app.ready();
 
@@ -96,6 +98,10 @@ describe('hello walking skeleton', () => {
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       const response = await app.inject({ method: 'GET', url: `/api/hello/${id}` });
+      if (response.statusCode === 404) {
+        await sleep(200);
+        continue;
+      }
       expect(response.statusCode).toBe(200);
       view = response.json() as typeof view;
       if (view?.status === 'DONE') break;
@@ -112,9 +118,34 @@ describe('hello walking skeleton', () => {
       'orchestrator',
     ]);
     expect(view?.hops.every((hop) => hop.hostname.length > 0 && hop.at.length > 0)).toBe(true);
+
+    // Redelivered / late order events must not change a finished hello.
+    const hop = { service: 'payment', hostname: 'dup', at: new Date().toISOString() };
+    await bus.publish('order-events', {
+      messageId: `${id}:payment:paid`,
+      type: 'hello.paid',
+      helloId: id,
+      name: 'integration',
+      hop,
+    });
+    await bus.publish('order-events', {
+      messageId: `${id}:ship:shipped`,
+      type: 'hello.shipped',
+      helloId: id,
+      name: 'integration',
+      hop: { ...hop, service: 'shipping' },
+    });
+    await sleep(2_000);
+    const after = await app.inject({ method: 'GET', url: `/api/hello/${id}` });
+    expect(after.json()).toMatchObject({ status: 'DONE' });
+    expect((after.json() as { hops: unknown[] }).hops).toHaveLength(6);
+  });
+
+  it('returns 404 for an unknown hello id', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/hello/00000000-0000-4000-8000-000000000000',
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

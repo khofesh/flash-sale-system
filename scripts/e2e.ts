@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 const baseUrl = process.env.E2E_BASE_URL ?? 'http://localhost:8080';
 const expectedHops = ['api', 'orchestrator', 'payment', 'orchestrator', 'shipping', 'orchestrator'];
 const timeoutMs = 15_000;
@@ -11,7 +12,7 @@ interface Hop {
 interface HelloView {
   id: string;
   name?: string;
-  status: 'QUEUED' | 'DONE';
+  status: 'QUEUED' | 'PAID' | 'DONE';
   hops: Hop[];
 }
 
@@ -37,6 +38,11 @@ async function main(): Promise<void> {
 
   while (Date.now() < deadline) {
     const response = await fetch(`${baseUrl}/api/hello/${id}`);
+    if (response.status === 404) {
+      // Not persisted by the orchestrator yet.
+      await sleep(200);
+      continue;
+    }
     if (!response.ok) {
       throw new Error(`GET /api/hello/${id} returned ${response.status}`);
     }
@@ -47,7 +53,9 @@ async function main(): Promise<void> {
 
   if (!view || view.status !== 'DONE') {
     throw new Error(
-      `Timed out after ${timeoutMs} ms waiting for DONE (last status: ${view?.status})`,
+      view
+        ? `Timed out after ${timeoutMs} ms waiting for DONE (last status: ${view.status})`
+        : `Timed out after ${timeoutMs} ms: hello ${id} was never persisted (404 throughout)`,
     );
   }
 
@@ -66,10 +74,6 @@ async function main(): Promise<void> {
   }
 
   console.log(`\nPASS — ${view.hops.length} hops, final status ${view.status}`);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 main().catch((error: unknown) => {

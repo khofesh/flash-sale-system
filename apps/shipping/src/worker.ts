@@ -1,6 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import os from 'node:os';
-import { makeHop, type HelloRequestMessage, type HelloResultMessage } from '@fss/core';
+import { isHelloRequest, makeHop, type HelloResultMessage } from '@fss/core';
 import type { Logger, MessageBus, StopFn } from '@fss/infra';
 
 export interface ShippingDeps {
@@ -17,7 +16,7 @@ export async function startShipping({ bus, logger }: ShippingDeps): Promise<Stop
     }
 
     const result: HelloResultMessage = {
-      messageId: randomUUID(),
+      messageId: `${body.messageId}:shipped`,
       type: 'hello.shipped',
       helloId: body.helloId,
       name: body.name,
@@ -27,14 +26,4 @@ export async function startShipping({ bus, logger }: ShippingDeps): Promise<Stop
     await bus.publish('order-events', result);
     logger.info({ helloId: body.helloId }, 'hello shipment completed');
   });
-}
-
-function isHelloRequest(body: unknown): body is HelloRequestMessage {
-  if (typeof body !== 'object' || body === null) return false;
-  const candidate = body as Partial<HelloRequestMessage>;
-  return (
-    typeof candidate.type === 'string' &&
-    typeof candidate.helloId === 'string' &&
-    typeof candidate.name === 'string'
-  );
 }

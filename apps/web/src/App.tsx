@@ -9,7 +9,7 @@ interface Hop {
 interface HelloView {
   id: string;
   name?: string;
-  status: 'QUEUED' | 'DONE';
+  status: 'QUEUED' | 'PAID' | 'DONE';
   hops: Hop[];
 }
 
@@ -65,11 +65,19 @@ export function App() {
     const poll = async () => {
       try {
         const response = await fetch(`/api/hello/${id}`);
+        if (response.status === 404) {
+          // Not persisted by the orchestrator yet; keep the QUEUED placeholder.
+          if (cancelled) return;
+          setError(null);
+          timer = setTimeout(poll, 500);
+          return;
+        }
         if (!response.ok) {
           throw new Error(`API returned ${response.status}`);
         }
         const data = (await response.json()) as HelloView;
         if (cancelled) return;
+        setError(null);
         setView(data);
         if (data.status !== 'DONE') {
           timer = setTimeout(poll, 500);

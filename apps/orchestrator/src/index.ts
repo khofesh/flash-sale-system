@@ -1,5 +1,12 @@
 import { loadConfig } from '@fss/config';
-import { createLogger, createPgPool, createRedis, createSqsClient, SqsBus } from '@fss/infra';
+import {
+  onShutdown,
+  createLogger,
+  createPgPool,
+  createRedis,
+  createSqsClient,
+  SqsBus,
+} from '@fss/infra';
 import { startOrchestrator } from './worker.js';
 
 const config = loadConfig();
@@ -20,30 +27,8 @@ const bus = new SqsBus(
 
 const stop = await startOrchestrator({ redis, pool, bus, logger });
 
-let shuttingDown = false;
-
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  logger.info({ signal }, 'shutting down');
-
-  const timeout = setTimeout(() => {
-    logger.error('graceful shutdown timed out');
-    process.exit(1);
-  }, 10_000);
-
-  try {
-    await stop();
-    await redis.quit();
-    await pool.end();
-  } catch (error) {
-    logger.error({ err: error }, 'shutdown failed');
-    process.exitCode = 1;
-  } finally {
-    clearTimeout(timeout);
-    process.exit();
-  }
-}
-
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT', () => void shutdown('SIGINT'));
+onShutdown(logger, async () => {
+  await stop();
+  await redis.quit();
+  await pool.end();
+});

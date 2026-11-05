@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { loadConfig } from '@fss/config';
 import { createLogger, createSqsClient, initQueues } from '@fss/infra';
 
@@ -26,7 +27,3 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 
 logger.error('queue initialization failed after all attempts');
 process.exit(1);
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

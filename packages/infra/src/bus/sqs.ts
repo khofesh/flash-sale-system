@@ -5,6 +5,7 @@ import {
   SendMessageCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Logger } from '../logger.js';
 import type {
   BusMessage,
@@ -91,11 +92,12 @@ export class SqsBus implements MessageBus {
     handler: MessageHandler,
     signal: AbortSignal,
   ): Promise<void> {
-    const queueUrl = await this.queueUrl(queue);
+    let queueUrl: string | undefined;
 
     while (!signal.aborted) {
       let messages;
       try {
+        queueUrl ??= await this.queueUrl(queue);
         const response = await this.client.send(
           new ReceiveMessageCommand({
             QueueUrl: queueUrl,
@@ -135,15 +137,15 @@ export class SqsBus implements MessageBus {
 
         try {
           await handler(received);
+          // Not tied to the shutdown signal: once the handler has succeeded the
+          // delete must go through, or the message is redelivered.
           await this.client.send(
             new DeleteMessageCommand({
               QueueUrl: queueUrl,
               ReceiptHandle: message.ReceiptHandle,
             }),
-            { abortSignal: signal },
           );
         } catch (error) {
-          if (signal.aborted) return;
           this.logger.error(
             { err: error, queue, messageId: message.MessageId },
             'message handling failed; leaving it for redelivery',
@@ -152,8 +154,4 @@ export class SqsBus implements MessageBus {
       }
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
