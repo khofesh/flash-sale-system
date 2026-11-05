@@ -15,6 +15,7 @@ x-node-env: &node-env
   SALE_STARTS_AT: ${SALE_STARTS_AT:-}
   SALE_ENDS_AT: ${SALE_ENDS_AT:-}
   SALE_TOTAL_STOCK: ${SALE_TOTAL_STOCK:-100}
+  # Dev stack only. The app has no default: without ADMIN_TOKEN the admin routes are disabled.
   ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
 
 x-node-build: &node-build

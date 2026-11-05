@@ -19,8 +19,9 @@ const schema = z.object({
   SALE_PRODUCT_ID: z.string().min(1).default('flash-tshirt'),
   SALE_STARTS_AT: optionalDate(),
   SALE_ENDS_AT: optionalDate(),
-  SALE_TOTAL_STOCK: z.coerce.number().int().nonnegative().default(100),
-  ADMIN_TOKEN: z.string().min(1).default('dev-admin-token'),
+  SALE_TOTAL_STOCK: z.coerce.number().int().nonnegative().max(2_147_483_647).default(100),
+  // No default: admin routes are only enabled when a token is set explicitly.
+  ADMIN_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
   MIGRATIONS_DIR: z.string().min(1).optional(),
 });
 

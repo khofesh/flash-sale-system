@@ -220,7 +220,7 @@ Base path `/api`. JSON in and out. Validation uses Fastify JSON Schema (TypeBox)
 
 ### 6.1 `GET /api/sale`
 
-Returns the sale status. Cached in-process for 250 ms per replica so status polling doesn't hammer Redis.
+Returns the sale status. Cached in-process for 250 ms per replica so status polling doesn't hammer Redis; concurrent cache misses share one Redis round trip. `status` and `serverTime` are derived from Redis `TIME` (the clock `reserve.lua` uses), never the replica's host clock. If the sale is defined but its Redis stock is missing, it returns 503 (fail closed).
 
 ```json
 200 { "saleId": "launch-2026", "status": "ACTIVE",
@@ -263,7 +263,8 @@ Reads Postgres first, then falls back to Redis, because a reservation can exist 
 ### 6.4 Operations endpoints
 
 - `GET /healthz` (liveness) and `GET /readyz` (Redis + PG reachable).
-- `POST /admin/sale` (dev only, guarded by `ADMIN_TOKEN`): create or reset a sale. Seeds Postgres, then Redis.
+- `POST /admin/sale` (dev only, guarded by `ADMIN_TOKEN`; not registered when `ADMIN_TOKEN` is unset): create or reset a sale. Seeds Postgres, then Redis, clearing the buyers set and stream while keeping the stream's consumer groups. Returns 409 `SALE_HAS_ORDERS` while the sale has live reservations or active orders.
+- Startup seeding from `SALE_*` only creates a missing sale. It never overwrites an existing sale or re-initialises Redis stock for one; if that stock is missing, the sale stays unavailable until reset or the Redis rebuild job runs.
 - `GET /admin/reconcile`: checks the stock invariant from §5.3 and reports any drift.
 - `GET /metrics`: Prometheus format (request rate, latency histogram, reserve outcomes, queue lag).
 

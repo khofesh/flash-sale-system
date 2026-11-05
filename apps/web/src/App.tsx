@@ -40,11 +40,16 @@ const saleLabels: Record<SaleStatus, string> = {
 };
 
 function formatCountdown(milliseconds: number): string {
-  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes === 0) return `${seconds}s`;
-  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  const total = Math.max(0, Math.ceil(milliseconds / 1000));
+  const d = Math.floor(total / 86_400);
+  const h = Math.floor((total % 86_400) / 3_600);
+  const m = Math.floor((total % 3_600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (d > 0) return `${d}d ${h}h ${pad(m)}m`;
+  if (h > 0) return `${h}h ${pad(m)}m ${pad(s)}s`;
+  if (m > 0) return `${m}m ${pad(s)}s`;
+  return `${s}s`;
 }
 
 export function App() {
@@ -91,10 +96,14 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Lowest round trip seen so far; its offset sample is the most accurate.
+    let bestRtt = Infinity;
 
     const pollSale = async () => {
       try {
+        const sentAt = Date.now();
         const response = await fetch('/api/sale');
+        const receivedAt = Date.now();
         if (cancelled) return;
         if (response.status === 404) {
           setSale(null);
@@ -107,8 +116,14 @@ export function App() {
           if (cancelled) return;
           setSale(data);
           // Correct the local clock against the server's, so the countdown does
-          // not depend on the browser clock (SPEC §8).
-          setClockOffset(Date.parse(data.serverTime) - Date.now());
+          // not depend on the browser clock (SPEC §8). Assume serverTime was
+          // stamped mid-flight, and keep the sample with the smallest round trip
+          // so latency jitter does not make the countdown jump.
+          const rtt = receivedAt - sentAt;
+          if (rtt <= bestRtt) {
+            bestRtt = rtt;
+            setClockOffset(Date.parse(data.serverTime) - (sentAt + rtt / 2));
+          }
           setSaleError(null);
         }
       } catch (caught) {

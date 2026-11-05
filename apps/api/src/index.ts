@@ -10,7 +10,7 @@ const redis = createRedis(config.REDIS_URL);
 const pool = createPgPool(config.DATABASE_URL);
 
 try {
-  const sale = await seedSale(pool, redis, {
+  const { sale, created, stockMissing } = await seedSale(pool, redis, {
     id: config.SALE_ID,
     productId: config.SALE_PRODUCT_ID,
     startsAt: config.SALE_STARTS_AT,
@@ -18,9 +18,22 @@ try {
     totalStock: config.SALE_TOTAL_STOCK,
   });
   logger.info(
-    { saleId: sale.id, startsAt: sale.startsAt, endsAt: sale.endsAt, totalStock: sale.totalStock },
+    {
+      saleId: sale.id,
+      startsAt: sale.startsAt,
+      endsAt: sale.endsAt,
+      totalStock: sale.totalStock,
+      created,
+    },
     'sale seeded',
   );
+  if (stockMissing) {
+    // Fail closed: re-initialising stock here could restore sold units.
+    logger.error(
+      { saleId: sale.id },
+      'redis stock is missing for an existing sale; it stays unavailable until reset or the redis rebuild runs',
+    );
+  }
 } catch (error) {
   logger.error({ err: error }, 'failed to seed sale');
   await redis.quit();
