@@ -15,8 +15,25 @@ const schema = z.object({
   AWS_ACCESS_KEY_ID: z.string().min(1).default('test'),
   AWS_SECRET_ACCESS_KEY: z.string().min(1).default('test'),
   PAYMENT_LATENCY_MS: z.coerce.number().int().nonnegative().default(100),
+  SALE_ID: z.string().min(1).default('launch-2026'),
+  SALE_PRODUCT_ID: z.string().min(1).default('flash-tshirt'),
+  SALE_STARTS_AT: optionalDate(),
+  SALE_ENDS_AT: optionalDate(),
+  SALE_TOTAL_STOCK: z.coerce.number().int().nonnegative().max(2_147_483_647).default(100),
+  // No default: admin routes are only enabled when a token is set explicitly.
+  ADMIN_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
   MIGRATIONS_DIR: z.string().min(1).optional(),
 });
+
+function optionalDate() {
+  return z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z
+      .string()
+      .refine((value) => !Number.isNaN(Date.parse(value)), 'must be an ISO date')
+      .optional(),
+  );
+}
 
 export type Config = z.infer<typeof schema>;
 

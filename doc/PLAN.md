@@ -24,7 +24,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
   | `pnpm lint` | ESLint + Prettier check |
   | `pnpm test` | Unit tests (no Docker) |
   | `pnpm test:int` | Integration tests (Testcontainers, needs Docker) |
-  | `pnpm stack:up` / `pnpm stack:down` | `docker compose up -d --build --wait` / `down -v` |
+  | `pnpm stack:up` / `pnpm stack:down` | `podman-compose up -d --build --wait` / `down -v` |
   | `pnpm e2e` | Scripted end-to-end check against the running stack |
   | `pnpm stress` | k6 + post-run verification |
   | `pnpm dev` | API + web in watch mode against compose infrastructure |
@@ -35,7 +35,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
 
 ## Phase 0: Walking skeleton ("hello world" end-to-end)
 
-**Goal:** `docker compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
+**Goal:** `podman-compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
 
 ### 0.1 Repo scaffolding
 - [x] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`24`), `.gitignore`, `.env.example`.
@@ -86,15 +86,41 @@ pnpm stack:down
 
 ## Phase 1: Sale configuration and status (SPEC §4.1, §6.1, §6.4)
 
-- [ ] Migration `0001_sales.sql` (`sales` table, SPEC §5.3).
-- [ ] `core/sale.ts`: `deriveSaleStatus(meta, stock, now)`, pure.
-- [ ] `infra/saleRepo`: seed from env (`SALE_*`) on start if missing, mirror to Redis `sale:{id}:meta` and `:stock`.
-- [ ] `POST /admin/sale` (guarded by `ADMIN_TOKEN`): create or reset a sale (PG first, then Redis; clears buyers and stream).
-- [ ] `GET /api/sale` with a 250 ms in-process cache and `serverTime`.
-- [ ] Web: status banner with countdown (corrected for clock offset) and remaining stock.
-- [ ] Tests: status at the 4 window boundaries (unit), and `/api/sale` via `fastify.inject` (integration).
+- [x] Migration `0001_sales.sql` (`sales` table, SPEC §5.3).
+- [x] `core/sale.ts`: `deriveSaleStatus(meta, stock, now)`, pure.
+- [x] `infra/saleRepo`: seed from env (`SALE_*`) on start if missing, mirror to Redis `sale:{id}:meta` and `:stock`.
+- [x] `POST /admin/sale` (guarded by `ADMIN_TOKEN`): create or reset a sale (PG first, then Redis; clears buyers and stream, keeps consumer groups; 409 while reservations or orders are live).
+- [x] `GET /api/sale` with a 250 ms in-process cache and `serverTime`.
+- [x] Web: status banner with countdown (corrected for clock offset) and remaining stock.
+- [x] Tests: status at the 4 window boundaries (unit), and `/api/sale` via `fastify.inject` (integration).
 
-**Verify:** reset a sale starting 30 s from now with `curl`. The UI counts down UPCOMING → ACTIVE. Reset with `endsAt` in the past → ENDED.
+### ✅ Verify Phase 1
+Reset a sale starting 30 s from now with `curl`. The UI counts down UPCOMING → ACTIVE. Reset with `endsAt` in the past → ENDED.
+
+```bash
+pnpm build && pnpm lint && pnpm test && pnpm test:int
+pnpm stack:up
+pnpm e2e                                  # Phase 0 path still PASSes
+
+T='x-admin-token: dev-admin-token'; J='content-type: application/json'
+sale() { curl -s -X POST localhost:8080/admin/sale -H "$T" -H "$J" \
+  -d "{\"startsAt\":\"$(date -u -d "$1" +%FT%TZ)\",\"endsAt\":\"$(date -u -d "$2" +%FT%TZ)\",\"totalStock\":${3:-100}}"; }
+
+sale '+30 sec' '+10 min'                  # 200
+curl -s localhost:8080/api/sale           # status UPCOMING, serverTime present
+open http://localhost:8080                # manual: countdown, then UPCOMING → ACTIVE
+sale '-10 min' '-1 min'                   # UI shows ENDED
+sale '+2 days' '+3 days'                  # UI countdown reads "2d 0h 00m"
+
+curl -si -X POST localhost:8080/admin/sale -H 'x-admin-token: nope' | head -1     # 401
+sale '+1 min' '+2 min' 3000000000         # 400 VALIDATION_ERROR
+
+sale '-10 min' '-1 min'
+podman-compose -f ./infra/docker-compose.yml restart api && curl -s localhost:8080/readyz   # boots after the sale ended
+podman-compose -f ./infra/docker-compose.yml exec redis redis-cli DEL 'sale:{launch-2026}:stock'
+sleep 1; curl -si localhost:8080/api/sale | head -1   # 503: fails closed, stock not refilled
+pnpm stack:down
+```
 
 ---
 

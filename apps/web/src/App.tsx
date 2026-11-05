@@ -13,6 +13,18 @@ interface HelloView {
   hops: Hop[];
 }
 
+type SaleStatus = 'UPCOMING' | 'ACTIVE' | 'SOLD_OUT' | 'ENDED';
+
+interface SaleView {
+  saleId: string;
+  status: SaleStatus;
+  startsAt: string;
+  endsAt: string;
+  remainingStock: number;
+  totalStock: number;
+  serverTime: string;
+}
+
 const serviceColors: Record<string, string> = {
   api: '#2563eb',
   orchestrator: '#7c3aed',
@@ -20,12 +32,37 @@ const serviceColors: Record<string, string> = {
   shipping: '#d97706',
 };
 
+const saleLabels: Record<SaleStatus, string> = {
+  UPCOMING: 'Upcoming',
+  ACTIVE: 'Live now',
+  SOLD_OUT: 'Sold out',
+  ENDED: 'Ended',
+};
+
+function formatCountdown(milliseconds: number): string {
+  const total = Math.max(0, Math.ceil(milliseconds / 1000));
+  const d = Math.floor(total / 86_400);
+  const h = Math.floor((total % 86_400) / 3_600);
+  const m = Math.floor((total % 3_600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (d > 0) return `${d}d ${h}h ${pad(m)}m`;
+  if (h > 0) return `${h}h ${pad(m)}m ${pad(s)}s`;
+  if (m > 0) return `${m}m ${pad(s)}s`;
+  return `${s}s`;
+}
+
 export function App() {
   const [name, setName] = useState('');
   const [id, setId] = useState<string | null>(null);
   const [view, setView] = useState<HelloView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const [sale, setSale] = useState<SaleView | null>(null);
+  const [saleError, setSaleError] = useState<string | null>(null);
+  const [clockOffset, setClockOffset] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
   async function sayHello(event: FormEvent) {
     event.preventDefault();
@@ -55,6 +92,59 @@ export function App() {
       setSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Lowest round trip seen so far; its offset sample is the most accurate.
+    let bestRtt = Infinity;
+
+    const pollSale = async () => {
+      try {
+        const sentAt = Date.now();
+        const response = await fetch('/api/sale');
+        const receivedAt = Date.now();
+        if (cancelled) return;
+        if (response.status === 404) {
+          setSale(null);
+          setSaleError('No sale configured yet');
+        } else {
+          if (!response.ok) {
+            throw new Error(`API returned ${response.status}`);
+          }
+          const data = (await response.json()) as SaleView;
+          if (cancelled) return;
+          setSale(data);
+          // Correct the local clock against the server's, so the countdown does
+          // not depend on the browser clock (SPEC §8). Assume serverTime was
+          // stamped mid-flight, and keep the sample with the smallest round trip
+          // so latency jitter does not make the countdown jump.
+          const rtt = receivedAt - sentAt;
+          if (rtt <= bestRtt) {
+            bestRtt = rtt;
+            setClockOffset(Date.parse(data.serverTime) - (sentAt + rtt / 2));
+          }
+          setSaleError(null);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setSaleError(caught instanceof Error ? caught.message : 'Could not load sale');
+        }
+      }
+      if (!cancelled) {
+        timer = setTimeout(pollSale, 1_000);
+      }
+    };
+
+    void pollSale();
+    const ticker = setInterval(() => setNow(Date.now()), 250);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      clearInterval(ticker);
+    };
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -97,16 +187,64 @@ export function App() {
     };
   }, [id]);
 
+  const serverNow = now + clockOffset;
+  const countdown = sale
+    ? sale.status === 'UPCOMING'
+      ? formatCountdown(Date.parse(sale.startsAt) - serverNow)
+      : sale.status === 'ACTIVE'
+        ? formatCountdown(Date.parse(sale.endsAt) - serverNow)
+        : null
+    : null;
+
   return (
     <main className="page">
       <header>
-        <p className="eyebrow">Phase 0 · walking skeleton</p>
-        <h1>Say hello through the whole stack</h1>
+        <p className="eyebrow">Phase 1 · sale configuration</p>
+        <h1>Flash sale status</h1>
         <p className="lede">
-          The message travels API → Redis stream → orchestrator → Postgres → SQS → payment → SQS →
-          shipping → back again.
+          The banner follows the server clock and the stock kept in Redis. The hello walkthrough
+          underneath still exercises the whole stack.
         </p>
       </header>
+
+      {sale && (
+        <section className={`sale-banner ${sale.status.toLowerCase()}`}>
+          <div className="sale-heading">
+            <div>
+              <p className="eyebrow">Sale · {sale.saleId}</p>
+              <h2>{saleLabels[sale.status]}</h2>
+            </div>
+            <span className="sale-status">{sale.status.replace('_', ' ')}</span>
+          </div>
+
+          <div className="sale-metrics">
+            <div>
+              <span>Remaining stock</span>
+              <strong>
+                {sale.remainingStock}
+                <small> / {sale.totalStock}</small>
+              </strong>
+            </div>
+            <div>
+              <span>
+                {sale.status === 'UPCOMING'
+                  ? 'Starts in'
+                  : sale.status === 'ACTIVE'
+                    ? 'Ends in'
+                    : 'Window'}
+              </span>
+              <strong>
+                {countdown ??
+                  `${new Date(sale.startsAt).toLocaleTimeString()} – ${new Date(
+                    sale.endsAt,
+                  ).toLocaleTimeString()}`}
+              </strong>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {saleError && <p className="error">{saleError}</p>}
 
       <form className="hello-form" onSubmit={sayHello}>
         <label htmlFor="name">Your name</label>

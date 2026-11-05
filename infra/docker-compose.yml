@@ -10,6 +10,13 @@ x-node-env: &node-env
   AWS_ACCESS_KEY_ID: test
   AWS_SECRET_ACCESS_KEY: test
   PAYMENT_LATENCY_MS: '100'
+  SALE_ID: ${SALE_ID:-launch-2026}
+  SALE_PRODUCT_ID: ${SALE_PRODUCT_ID:-flash-tshirt}
+  SALE_STARTS_AT: ${SALE_STARTS_AT:-}
+  SALE_ENDS_AT: ${SALE_ENDS_AT:-}
+  SALE_TOTAL_STOCK: ${SALE_TOTAL_STOCK:-100}
+  # Dev stack only. The app has no default: without ADMIN_TOKEN the admin routes are disabled.
+  ADMIN_TOKEN: ${ADMIN_TOKEN:-dev-admin-token}
 
 x-node-build: &node-build
   context: ..
@@ -63,7 +70,7 @@ services:
       retries: 30
 
   queue-init:
-    image: fss-node:api
+    image: localhost/fss-node:api
     build:
       <<: *node-build
       args:
@@ -78,7 +85,7 @@ services:
     restart: 'no'
 
   migrate:
-    image: fss-node:api
+    image: localhost/fss-node:api
     build:
       <<: *node-build
       args:
@@ -93,7 +100,7 @@ services:
     restart: 'no'
 
   api:
-    image: fss-node:api
+    image: localhost/fss-node:api
     build:
       <<: *node-build
       args:
@@ -120,7 +127,7 @@ services:
       start_period: 10s
 
   orchestrator:
-    image: fss-node:orchestrator
+    image: localhost/fss-node:orchestrator
     build:
       <<: *node-build
       args:
@@ -147,7 +154,7 @@ services:
       start_period: 10s
 
   payment:
-    image: fss-node:payment
+    image: localhost/fss-node:payment
     build:
       <<: *node-build
       args:
@@ -168,7 +175,7 @@ services:
       start_period: 10s
 
   shipping:
-    image: fss-node:shipping
+    image: localhost/fss-node:shipping
     build:
       <<: *node-build
       args:
@@ -189,7 +196,7 @@ services:
       start_period: 10s
 
   web:
-    image: fss-web:phase0
+    image: localhost/fss-web:phase0
     build:
       context: ..
       dockerfile: Dockerfile

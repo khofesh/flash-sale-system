@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1162.0",
+    "@fss/core": "workspace:*",
     "ioredis": "6.0.0",
     "pg": "8.23.1",
     "pino": "10.4.0"
