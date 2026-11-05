@@ -1,6 +1,6 @@
 # Flash Sale System — Technical Specification
 
-Status: Draft v0.1
+Status: Approved v0.1
 
 ---
 
@@ -72,16 +72,16 @@ flowchart LR
 
 ### 3.2 Components
 
-| Component              | Tech                                               | Responsibility                                                                                                              | Scaling                               |
-| ---------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| **Web**                | React + Vite + TypeScript                          | Show sale status, take `userId`, Buy Now, poll order status.                                                                | Static files                          |
-| **Load balancer**      | nginx                                              | Round-robin to API replicas; per-IP rate limit (`limit_req`).                                                               | 1 (could be N behind DNS)             |
-| **API**                | Node.js + **Fastify** + TypeScript                 | Stateless HTTP. Validates input, runs the reserve Lua script, serves status reads.                                          | Horizontal, stateless                 |
-| **Redis**              | Redis 7 (AOF `everysec`)                           | Source of truth **for the hot path**: remaining stock, buyers set, reservations stream (outbox).                            | Single primary (see §9.3)             |
-| **Postgres**           | Postgres 16                                        | **Durable** source of truth: sales, orders, saga state. Unique constraints are the last line of defence against duplicates. | Single primary                        |
-| **Order Orchestrator** | Node.js worker                                     | Reads the reservations stream, persists orders, and drives the saga state machine.                                          | N consumers in a Redis consumer group |
-| **Payment service**    | Node.js worker                                     | Mock charge with configurable latency and failure rate. Idempotent on `orderId`.                                            | N consumers on the SQS queue          |
-| **Shipping service**   | Node.js worker                                     | Mock shipment creation. Idempotent on `orderId`.                                                                            | N consumers on the SQS queue          |
+| Component              | Tech                                           | Responsibility                                                                                                              | Scaling                               |
+| ---------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| **Web**                | React + Vite + TypeScript                      | Show sale status, take `userId`, Buy Now, poll order status.                                                                | Static files                          |
+| **Load balancer**      | nginx                                          | Round-robin to API replicas; per-IP rate limit (`limit_req`).                                                               | 1 (could be N behind DNS)             |
+| **API**                | Node.js + **Fastify** + TypeScript             | Stateless HTTP. Validates input, runs the reserve Lua script, serves status reads.                                          | Horizontal, stateless                 |
+| **Redis**              | Redis 7 (AOF `everysec`)                       | Source of truth **for the hot path**: remaining stock, buyers set, reservations stream (outbox).                            | Single primary (see §9.3)             |
+| **Postgres**           | Postgres 16                                    | **Durable** source of truth: sales, orders, saga state. Unique constraints are the last line of defence against duplicates. | Single primary                        |
+| **Order Orchestrator** | Node.js worker                                 | Reads the reservations stream, persists orders, and drives the saga state machine.                                          | N consumers in a Redis consumer group |
+| **Payment service**    | Node.js worker                                 | Mock charge with configurable latency and failure rate. Idempotent on `orderId`.                                            | N consumers on the SQS queue          |
+| **Shipping service**   | Node.js worker                                 | Mock shipment creation. Idempotent on `orderId`.                                                                            | N consumers on the SQS queue          |
 | **Message broker**     | SQS API, served locally by **Floci** (see §10) | Queues between saga participants, with DLQs.                                                                                | —                                     |
 
 ### 3.3 Design decisions
@@ -446,5 +446,5 @@ Milestone 1 alone satisfies `idea.md`. Milestones 2–3 go beyond it and show th
 ## 15. Decisions (resolved open questions)
 
 1. **Retry after a failed payment:** yes. The unit is released and the user may buy again while stock remains.
-2. **Meaning of "secured":** *reserved*, counted from the moment of the Redis decision. Payment status is shown separately.
+2. **Meaning of "secured":** _reserved_, counted from the moment of the Redis decision. Payment status is shown separately.
 3. **Admission control:** per-IP rate limiting only. A waiting room or virtual queue is future work.
