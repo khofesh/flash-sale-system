@@ -11,7 +11,9 @@ A flash sale system: one product, limited stock, a fixed time window, one item p
 
 ## Status
 
-The repository currently holds docs only. Implementation starts at **PLAN Phase 0**, the walking skeleton: a hello message that passes through every component. Don't start a later phase until the current phase's "Verify" block passes.
+**PLAN Phase 0 is complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Its "Verify" block passes, including `pnpm e2e`, `pnpm stress -- smoke`, and the orchestrator-restart check.
+
+Next is **PLAN Phase 1** (sale configuration and status). Don't start a later phase until the current phase's "Verify" block passes.
 
 ## Stack
 

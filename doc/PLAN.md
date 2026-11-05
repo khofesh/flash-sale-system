@@ -38,35 +38,35 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
 **Goal:** `docker compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
 
 ### 0.1 Repo scaffolding
-- [ ] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`24`), `.gitignore`, `.env.example`.
-- [ ] Workspaces, each with `package.json`, `tsconfig.json` and `src/index.ts`:
+- [x] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`24`), `.gitignore`, `.env.example`.
+- [x] Workspaces, each with `package.json`, `tsconfig.json` and `src/index.ts`:
   - `packages/config`: zod env parsing (`loadConfig()`), shared by all apps.
   - `packages/core`: empty domain module plus a `hello()` pure function (gives the unit test something to test).
   - `packages/infra`: Redis client factory, pg Pool factory, `MessageBus` interface with `SqsBus` and `InMemoryBus`, structured logger (pino).
   - `apps/api`, `apps/orchestrator`, `apps/payment`, `apps/shipping`, `apps/web`.
-- [ ] One multi-stage `Dockerfile` with a build arg `APP=<name>`, so every Node service uses the same image recipe.
+- [x] One multi-stage `Dockerfile` with a build arg `APP=<name>`, so every Node service uses the same image recipe.
 
 ### 0.2 Infrastructure (`infra/`)
-- [ ] `docker-compose.yml` with all final services and health checks: `redis` (AOF on), `postgres`, `floci`, `queue-init` (one-shot), `api` (×2 for now), `orchestrator`, `payment`, `shipping`, `nginx`, `web`.
-- [ ] `infra/init-queues.ts`: creates `payment-requests`, `shipping-requests` and `order-events`, each with a `-dlq` and `RedrivePolicy { maxReceiveCount: 5 }`. Safe to re-run.
-- [ ] `infra/migrations/0000_hello.sql`: `hello_messages (id uuid pk, name text, hops jsonb, status text, created_at, updated_at)`. A tiny migration runner (`node-pg-migrate` or a ~30-line custom script) runs at orchestrator start.
-- [ ] `infra/nginx.conf`: `/api/*` → API upstream (round-robin), `/` → web. Adds an `X-Upstream` response header so you can see load balancing working.
+- [x] `docker-compose.yml` with all final services and health checks: `redis` (AOF on), `postgres`, `floci`, `queue-init` (one-shot), `api` (×2 for now), `orchestrator`, `payment`, `shipping`, `nginx`, `web`.
+- [x] `infra/init-queues.ts`: creates `payment-requests`, `shipping-requests` and `order-events`, each with a `-dlq` and `RedrivePolicy { maxReceiveCount: 5 }`. Safe to re-run.
+- [x] `infra/migrations/0000_hello.sql`: `hello_messages (id uuid pk, name text, hops jsonb, status text, created_at, updated_at)`. A tiny migration runner (`node-pg-migrate` or a ~30-line custom script) runs at orchestrator start.
+- [x] `infra/nginx.conf`: `/api/*` → API upstream (round-robin), `/` → web. Adds an `X-Upstream` response header so you can see load balancing working.
 
 ### 0.3 Hello flow
-- [ ] **API** (Fastify): `GET /healthz`, `GET /readyz` (pings Redis + PG), `POST /api/hello {name}` → `XADD hello:stream * id name` → `202 {id}`. `GET /api/hello/:id` reads PG, or returns `{status:"QUEUED"}` if not persisted yet.
-- [ ] **Orchestrator:** `XREADGROUP` on `hello:stream` (group `orchestrator`) → insert row (`ON CONFLICT DO NOTHING`), add hop `orchestrator` → publish `hello.payment` to `payment-requests` → `XACK`. Consumes `order-events`: on `hello.paid`, add hop and publish `hello.ship`. On `hello.shipped`, add hop and set `status=DONE`.
-- [ ] **Payment:** consume `payment-requests` → sleep 100 ms → publish `hello.paid` to `order-events`.
-- [ ] **Shipping:** consume `shipping-requests` → publish `hello.shipped` to `order-events`.
-- [ ] Every hop records `{service, hostname, at}`, so the timeline shows which replica handled each step.
+- [x] **API** (Fastify): `GET /healthz`, `GET /readyz` (pings Redis + PG), `POST /api/hello {name}` → `XADD hello:stream * id name` → `202 {id}`. `GET /api/hello/:id` reads PG, or returns `{status:"QUEUED"}` if not persisted yet.
+- [x] **Orchestrator:** `XREADGROUP` on `hello:stream` (group `orchestrator`) → insert row (`ON CONFLICT DO NOTHING`), add hop `orchestrator` → publish `hello.payment` to `payment-requests` → `XACK`. Consumes `order-events`: on `hello.paid`, add hop and publish `hello.ship`. On `hello.shipped`, add hop and set `status=DONE`.
+- [x] **Payment:** consume `payment-requests` → sleep 100 ms → publish `hello.paid` to `order-events`.
+- [x] **Shipping:** consume `shipping-requests` → publish `hello.shipped` to `order-events`.
+- [x] Every hop records `{service, hostname, at}`, so the timeline shows which replica handled each step.
 
 ### 0.4 Web
-- [ ] Vite + React + TS. One page: name input, **Say hello** button, then polls `GET /api/hello/:id` every 500 ms and renders the hop timeline until `DONE`.
-- [ ] Served by nginx in compose. `pnpm dev` uses the Vite proxy to `localhost:8080`.
+- [x] Vite + React + TS. One page: name input, **Say hello** button, then polls `GET /api/hello/:id` every 500 ms and renders the hop timeline until `DONE`.
+- [x] Served by nginx in compose. `pnpm dev` uses the Vite proxy to `localhost:8080`.
 
 ### 0.5 Test and stress tooling
-- [ ] Vitest workspace config. One unit test (`core/hello`). One integration test using Testcontainers (Redis + Postgres + Floci) that runs the orchestrator, payment and shipping **in-process** and checks a hello reaches `DONE`.
-- [ ] `scripts/e2e.ts`: POST hello via nginx, poll until `DONE` (timeout 15 s), assert the hops are `[api, orchestrator, payment, orchestrator, shipping, orchestrator]`.
-- [ ] `stress/smoke.js` (k6, run via the `grafana/k6` Docker image so nothing needs installing locally): 50 VUs × 20 s of `POST /api/hello`. Thresholds: `http_req_failed < 1%`, `p(95) < 200ms`.
+- [x] Vitest workspace config. One unit test (`core/hello`). One integration test using Testcontainers (Redis + Postgres + Floci) that runs the orchestrator, payment and shipping **in-process** and checks a hello reaches `DONE`.
+- [x] `scripts/e2e.ts`: POST hello via nginx, poll until `DONE` (timeout 15 s), assert the hops are `[api, orchestrator, payment, orchestrator, shipping, orchestrator]`.
+- [x] `stress/smoke.js` (k6, run via the `grafana/k6` Docker image so nothing needs installing locally): 50 VUs × 20 s of `POST /api/hello`. Thresholds: `http_req_failed < 1%`, `p(95) < 200ms`.
 - [ ] GitHub Actions (optional): `lint → test → test:int`.
 
 ### ✅ Verify Phase 0

@@ -1,0 +1,10 @@
+.git
+.gitignore
+graphify-out
+temp
+node_modules
+**/node_modules
+dist
+**/dist
+stress/results
+.env

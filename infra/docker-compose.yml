@@ -1,0 +1,203 @@
+name: flash-sale
+
+x-node-env: &node-env
+  NODE_ENV: production
+  LOG_LEVEL: info
+  REDIS_URL: redis://redis:6379
+  DATABASE_URL: postgres://flash:flash@postgres:5432/flash
+  SQS_ENDPOINT: http://floci:4566
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  PAYMENT_LATENCY_MS: '100'
+
+x-node-build: &node-build
+  context: ..
+  dockerfile: Dockerfile
+  target: service
+
+services:
+  redis:
+    image: redis:7.4.2-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: flash
+      POSTGRES_PASSWORD: flash
+      POSTGRES_DB: flash
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U flash -d flash']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  floci:
+    image: floci/floci:2.4.0
+    ports:
+      - '4566:4566'
+    healthcheck:
+      test: ['CMD-SHELL', "timeout 1 bash -c '</dev/tcp/127.0.0.1/4566'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  queue-init:
+    image: fss-node:api
+    build:
+      <<: *node-build
+      args:
+        APP: api
+    command: ['pnpm', 'exec', 'tsx', 'infra/init-queues.ts']
+    environment:
+      <<: *node-env
+      SERVICE_NAME: queue-init
+    depends_on:
+      floci:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    image: fss-node:api
+    build:
+      <<: *node-build
+      args:
+        APP: api
+    environment:
+      <<: *node-env
+      SERVICE_NAME: api
+      HOST: 0.0.0.0
+      PORT: '3000'
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  orchestrator:
+    image: fss-node:orchestrator
+    build:
+      <<: *node-build
+      args:
+        APP: orchestrator
+    environment:
+      <<: *node-env
+      SERVICE_NAME: orchestrator
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      floci:
+        condition: service_healthy
+      queue-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', "pgrep -f 'node apps/orchestrator/dist/inde[x].js' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  payment:
+    image: fss-node:payment
+    build:
+      <<: *node-build
+      args:
+        APP: payment
+    environment:
+      <<: *node-env
+      SERVICE_NAME: payment
+    depends_on:
+      floci:
+        condition: service_healthy
+      queue-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', "pgrep -f 'node apps/payment/dist/inde[x].js' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  shipping:
+    image: fss-node:shipping
+    build:
+      <<: *node-build
+      args:
+        APP: shipping
+    environment:
+      <<: *node-env
+      SERVICE_NAME: shipping
+    depends_on:
+      floci:
+        condition: service_healthy
+      queue-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ['CMD-SHELL', "pgrep -f 'node apps/shipping/dist/inde[x].js' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  web:
+    image: fss-web:phase0
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: web
+      args:
+        APP: web
+    expose:
+      - '80'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  nginx:
+    image: nginx:1.27.3-alpine
+    ports:
+      - '8080:80'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  redis-data:
+  postgres-data:
