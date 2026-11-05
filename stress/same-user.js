@@ -6,6 +6,8 @@ const baseUrl = __ENV.BASE_URL || 'http://host.docker.internal:8080';
 const iterations = Number(__ENV.ITERATIONS || 2000);
 const users = Number(__ENV.USERS || 50);
 const vus = Math.min(iterations, Number(__ENV.VUS || 500));
+// Every abusing user gets exactly one unit, as long as stock covers them all.
+const expectedReserved = Math.min(users, vus, Number(__ENV.STOCK || 100));
 
 const reserved = new Counter('abuse_reserved');
 const already = new Counter('abuse_already_purchased');
@@ -25,7 +27,8 @@ export const options = {
   },
   thresholds: {
     http_req_failed: ['rate<0.001'],
-    abuse_reserved: [`count<=${users}`],
+    abuse_reserved: [`count==${expectedReserved}`],
+    abuse_already_purchased: [`count==${iterations - expectedReserved}`],
     abuse_server_errors: ['count==0'],
     abuse_unexpected: ['count==0'],
   },

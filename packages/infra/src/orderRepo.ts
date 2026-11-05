@@ -40,19 +40,45 @@ export interface Reservation {
 }
 
 /**
- * Persists a reservation as a RESERVED order and appends the saga event, in one
- * transaction. The order id is the reservation id from Redis, so redelivery is
- * idempotent: `ON CONFLICT (id) DO NOTHING` never creates a second order.
+ * How a reservation delivery was handled:
+ * - `inserted`: a new RESERVED order was written.
+ * - `duplicate`: this reservation was already processed (stream redelivery).
+ * - `conflict`: the user already holds another live order for the sale, so the
+ *   partial unique index refused a second one. The caller must give the unit
+ *   back to stock; this outcome is only returned once per reservation.
  */
-export async function persistReservation(pool: Pool, reservation: Reservation): Promise<boolean> {
+export type PersistOutcome = 'inserted' | 'duplicate' | 'conflict';
+
+/**
+ * Persists a reservation as a RESERVED order and appends the saga event, in one
+ * transaction. Deliveries are deduplicated through `processed_messages`, and the
+ * order id is the reservation id from Redis, so redelivery never creates a
+ * second order. `ON CONFLICT DO NOTHING` also covers the one-live-order-per-user
+ * index, so a conflicting entry is recorded instead of failing forever.
+ */
+export async function persistReservation(
+  pool: Pool,
+  reservation: Reservation,
+): Promise<PersistOutcome> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
+    const claimed = await client.query(
+      `INSERT INTO processed_messages (consumer, message_id)
+       VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [RESERVATION_CONSUMER, reservation.orderId],
+    );
+    if (claimed.rowCount !== 1) {
+      await client.query('COMMIT');
+      return 'duplicate';
+    }
+
     const inserted = await client.query<{ id: string }>(
       `INSERT INTO orders (id, sale_id, user_id, status)
        VALUES ($1, $2, $3, 'RESERVED')
-       ON CONFLICT (id) DO NOTHING
+       ON CONFLICT DO NOTHING
        RETURNING id`,
       [reservation.orderId, reservation.saleId, reservation.userId],
     );
@@ -63,17 +89,17 @@ export async function persistReservation(pool: Pool, reservation: Reservation): 
         userId: reservation.userId,
         reservedAt: reservation.reservedAt,
       });
+      await client.query('COMMIT');
+      return 'inserted';
     }
 
-    await client.query(
-      `INSERT INTO processed_messages (consumer, message_id)
-       VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`,
-      [RESERVATION_CONSUMER, reservation.orderId],
-    );
-
+    // The order id already exists: an earlier delivery wrote it without a
+    // processed_messages row. Treat it as a redelivery, never as a conflict.
+    const existing = await client.query('SELECT 1 FROM orders WHERE id = $1', [
+      reservation.orderId,
+    ]);
     await client.query('COMMIT');
-    return inserted.rowCount === 1;
+    return existing.rowCount === 1 ? 'duplicate' : 'conflict';
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

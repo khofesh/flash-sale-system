@@ -109,6 +109,38 @@ function feedbackFor(code: PurchaseCode): Feedback {
   }
 }
 
+const purchaseCodes = new Set<string>([
+  'RESERVED',
+  'ALREADY_PURCHASED',
+  'SOLD_OUT',
+  'NOT_STARTED',
+  'ENDED',
+  'VALIDATION_ERROR',
+  'RATE_LIMITED',
+  'UNAVAILABLE',
+  'SALE_NOT_FOUND',
+] satisfies PurchaseCode[]);
+
+/**
+ * Parses a purchase response. Errors produced in front of the API (nginx 429 or
+ * 502 pages) are not JSON, so they are mapped from the status code instead.
+ */
+async function readPurchaseBody(
+  response: Response,
+): Promise<{ code: PurchaseCode; orderId?: string }> {
+  try {
+    const data = (await response.json()) as { code?: PurchaseCode; orderId?: string };
+    if (data.code && purchaseCodes.has(data.code)) {
+      return data as { code: PurchaseCode; orderId?: string };
+    }
+  } catch {
+    // Fall through to the status code.
+  }
+  if (response.status === 429) return { code: 'RATE_LIMITED' };
+  if (response.status >= 400 && response.status < 500) return { code: 'VALIDATION_ERROR' };
+  return { code: 'UNAVAILABLE' };
+}
+
 function stepIndex(status: OrderStatus | undefined): number {
   switch (status) {
     case 'RESERVED':
@@ -118,7 +150,8 @@ function stepIndex(status: OrderStatus | undefined): number {
     case 'SHIPPING_PENDING':
       return 1;
     case 'COMPLETED':
-      return 2;
+      // Past the last step, so every step renders as done.
+      return 3;
     default:
       return -1;
   }
@@ -157,7 +190,7 @@ export function App() {
         },
         body: JSON.stringify({ userId: id }),
       });
-      const data = (await response.json()) as { code: PurchaseCode; orderId?: string };
+      const data = await readPurchaseBody(response);
 
       setFeedback(feedbackFor(data.code));
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
@@ -93,9 +94,28 @@ describe('purchases', () => {
   });
 
   beforeEach(async () => {
+    // Let the orchestrator finish the previous test's reservations first;
+    // otherwise it can persist one after the TRUNCATE and block the next reset.
+    await drainReservations();
     await pool.query('TRUNCATE orders, saga_events, processed_messages CASCADE');
     await redis.del(saleRedisKeys(saleId).buyers);
   });
+
+  async function drainReservations(): Promise<void> {
+    const { reservations } = saleRedisKeys(saleId);
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if ((await redis.exists(reservations)) === 0) return;
+      const groups = (await redis.xinfo('GROUPS', reservations)) as unknown[][];
+      const busy = groups.some((fields) => {
+        const field = (name: string) => fields[fields.indexOf(name) + 1];
+        return Number(field('pending')) > 0 || Number(field('lag') ?? 0) > 0;
+      });
+      if (!busy) return;
+      await sleep(50);
+    }
+    throw new Error('orchestrator did not drain the reservations stream');
+  }
 
   async function useSale(options: {
     totalStock: number;
@@ -282,5 +302,48 @@ describe('purchases', () => {
     );
     expect(orders.rows[0]?.count).toBe(1);
     expect(await redis.get(saleRedisKeys(saleId).stock)).toBe('1');
+  });
+  it('returns a conflicting reservation to stock instead of creating a second live order', async () => {
+    await useSale({ totalStock: 3 });
+    const first = await postPurchase('alice');
+    const { orderId } = first.json();
+    await waitForStatus('alice', 'COMPLETED');
+
+    // Simulates the Redis layer letting a second reservation through for the
+    // same user (e.g. buyers set lost): the DB index must refuse it, and the
+    // unit it took must go back to stock exactly once.
+    const { reservations, stock } = saleRedisKeys(saleId);
+    await redis.decr(stock);
+    const second = randomUUID();
+    await redis.xadd(reservations, '*', 'reservationId', second, 'userId', 'alice', 'ts', '1');
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && (await redis.get(stock)) !== '2') await sleep(100);
+    expect(await redis.get(stock)).toBe('2');
+
+    // A redelivery of the same entry is a no-op: no second INCR.
+    await redis.xadd(reservations, '*', 'reservationId', second, 'userId', 'alice', 'ts', '1');
+    await sleep(500);
+    expect(await redis.get(stock)).toBe('2');
+
+    const orders = await pool.query<{ id: string }>('SELECT id FROM orders WHERE user_id = $1', [
+      'alice',
+    ]);
+    expect(orders.rows.map((row) => row.id)).toEqual([orderId]);
+  });
+
+  it('reports a pending re-purchase from Redis when the stored order was cancelled', async () => {
+    await useSale({ totalStock: 2 });
+    const first = await postPurchase('bob');
+    const { orderId } = first.json();
+    await waitForStatus('bob', 'COMPLETED');
+
+    await pool.query(`UPDATE orders SET status = 'CANCELLED' WHERE id = $1`, [orderId]);
+    const cancelled = await getPurchase('bob');
+    expect(cancelled.json()).toMatchObject({ status: 'RESERVED', secured: true });
+
+    await redis.srem(saleRedisKeys(saleId).buyers, 'bob');
+    const released = await getPurchase('bob');
+    expect(released.json()).toMatchObject({ status: 'CANCELLED', secured: false, orderId });
   });
 });

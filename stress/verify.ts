@@ -17,6 +17,7 @@ interface Snapshot {
   liveUsers: number;
   allOrders: number;
   unpersisted: number;
+  buyers: number;
 }
 
 /**
@@ -47,7 +48,7 @@ export async function verifyStack(): Promise<void> {
 
     console.log(
       `\nverify ${config.SALE_ID}: total=${totalStock} stock=${snapshot.stock} ` +
-        `live=${snapshot.liveOrders} unpersisted=${snapshot.unpersisted}`,
+        `live=${snapshot.liveOrders} buyers=${snapshot.buyers} unpersisted=${snapshot.unpersisted}`,
     );
 
     assert(snapshot.unpersisted === 0, `${snapshot.unpersisted} reservations were never persisted`);
@@ -55,6 +56,10 @@ export async function verifyStack(): Promise<void> {
     assert(
       snapshot.liveUsers === snapshot.liveOrders,
       `duplicate live orders: ${snapshot.liveOrders} orders for ${snapshot.liveUsers} users`,
+    );
+    assert(
+      snapshot.buyers === snapshot.liveOrders,
+      `Redis buyers set (${snapshot.buyers}) disagrees with live orders (${snapshot.liveOrders})`,
     );
     assert(
       snapshot.stock + snapshot.liveOrders + snapshot.unpersisted === totalStock,
@@ -94,6 +99,7 @@ async function readSnapshot(
     throw new Error(`Redis stock for ${saleId} is missing`);
   }
   const stock = Number(stockRaw);
+  const buyers = await redis.scard(keys.buyers);
 
   const live = await pool.query<{ live: number; users: number; all_orders: number }>(
     `SELECT
@@ -131,6 +137,7 @@ async function readSnapshot(
     liveUsers: row.users,
     allOrders: row.all_orders,
     unpersisted,
+    buyers,
   };
 }
 

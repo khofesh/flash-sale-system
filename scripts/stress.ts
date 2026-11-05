@@ -73,8 +73,12 @@ async function prepareSale(): Promise<void> {
   const pool = createPgPool(config.DATABASE_URL);
 
   try {
+    const keys = saleRedisKeys(saleId);
+    // Empty the stream first (keeping its consumer groups), so the orchestrator
+    // cannot re-insert an old reservation between the TRUNCATE and the reset.
+    await redis.xtrim(keys.reservations, 'MAXLEN', 0).catch(() => undefined);
+    await redis.del(keys.buyers);
     await pool.query('TRUNCATE orders, saga_events, processed_messages RESTART IDENTITY CASCADE');
-    await redis.del(saleRedisKeys(saleId).buyers);
 
     const now = Date.now();
     await resetSale(pool, redis, {

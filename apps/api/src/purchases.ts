@@ -130,6 +130,18 @@ export function registerPurchaseRoutes(
       deps.logger.warn({ err: error }, 'failed to read order from postgres; falling back to redis');
     }
 
+    // A cancelled or refunded order no longer holds a unit. If the user bought
+    // again and the orchestrator has not persisted it yet, Redis knows first.
+    if (order && !SECURED_ORDER_STATUSES.has(order.status)) {
+      try {
+        if (await deps.reservations.isBuyer(deps.saleId, userId)) {
+          return { userId, secured: true, status: 'RESERVED' as OrderStatus };
+        }
+      } catch (error) {
+        deps.logger.warn({ err: error }, 'failed to read buyers set from redis');
+      }
+    }
+
     if (order) {
       return {
         userId,
@@ -210,8 +222,12 @@ async function readCachedResponse(redis: Redis, key: string): Promise<CachedResp
       return { status: parsed.status, body: parsed.body };
     }
   } catch {
-    // Corrupt cache entry: ignore it and let the request proceed.
+    // Handled below.
   }
+  // Corrupt cache entry: drop it so this request can claim the key instead of
+  // waiting on a response that will never arrive. The reserve script still
+  // guards against a second unit for the same user.
+  await redis.del(key);
   return null;
 }
 
@@ -248,7 +264,10 @@ async function storeCachedResponse(
       ttl,
     );
   } catch (error) {
-    // The purchase already happened; a cache failure must not turn it into an error.
+    // The purchase already happened; a cache failure must not turn it into an
+    // error. Drop the PENDING claim so retries are not stuck behind it; the
+    // reserve script answers them with ALREADY_PURCHASED.
     logger.warn({ err: error }, 'failed to store idempotent response');
+    await redis.del(key).catch(() => undefined);
   }
 }

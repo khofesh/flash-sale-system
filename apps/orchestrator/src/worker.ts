@@ -63,6 +63,9 @@ function consumeReservations(deps: OrchestratorDeps, consumer: string): StopFn {
   const claimIntervalMs = deps.claimIntervalMs ?? 5_000;
   let running = true;
   let lastClaim = 0;
+  // XAUTOCLAIM scans the pending list in pages; keep the cursor so entries past
+  // the first page are reclaimed too.
+  let claimCursor = '0-0';
 
   const handleEntries = async (entries: StreamEntry[]) => {
     for (const [entryId, rawFields] of entries) {
@@ -89,15 +92,16 @@ function consumeReservations(deps: OrchestratorDeps, consumer: string): StopFn {
           lastClaim = Date.now();
           // Reclaims entries left pending by crashed consumers (including a
           // previous incarnation of this one) and entries whose handling failed.
-          const [, claimed] = (await redis.xautoclaim(
+          const [next, claimed] = (await redis.xautoclaim(
             stream,
             RESERVATIONS_GROUP,
             consumer,
             claimIdleMs,
-            '0-0',
+            claimCursor,
             'COUNT',
             100,
           )) as [string, Array<StreamEntry | null>];
+          claimCursor = next;
           const live = claimed.filter((entry): entry is StreamEntry => entry !== null);
           if (live.length) {
             logger.warn({ count: live.length }, 'reclaimed pending reservation stream entries');
@@ -123,6 +127,15 @@ function consumeReservations(deps: OrchestratorDeps, consumer: string): StopFn {
         }
       } catch (error) {
         if (!running) return;
+        if (error instanceof Error && error.message.includes('NOGROUP')) {
+          // The stream key was deleted (e.g. by hand); recreate the group.
+          logger.warn('reservation consumer group is missing; recreating it');
+          claimCursor = '0-0';
+          await ensureGroup(redis, deps.saleId).catch((cause: unknown) => {
+            logger.error({ err: cause }, 'failed to recreate reservation consumer group');
+          });
+          continue;
+        }
         logger.error({ err: error }, 'reservation stream read failed');
         await sleep(1_000);
       }
@@ -139,28 +152,35 @@ function consumeReservations(deps: OrchestratorDeps, consumer: string): StopFn {
  * Persists the reservation, then applies the Phase 2 payment stub. Commit
  * happens before the stream entry is acked; if the orchestrator dies in
  * between, XAUTOCLAIM redelivers and both steps are idempotent.
+ *
+ * A reservation that conflicts with a live order for the same user (the second
+ * layer of the one-per-user rule) is never persisted; its unit goes back to
+ * stock so `sold + available == initial_stock` keeps holding. The INCR runs
+ * after the commit that recorded the conflict, so a crash in between can only
+ * under-sell, never oversell.
  */
 async function handleReservation(deps: OrchestratorDeps, fields: ReservationFields): Promise<void> {
-  const { pool, logger, saleId } = deps;
+  const { pool, redis, logger, saleId } = deps;
+  const log = { saleId, orderId: fields.reservationId, userId: fields.userId };
 
-  const inserted = await persistReservation(pool, {
+  const outcome = await persistReservation(pool, {
     saleId,
     orderId: fields.reservationId,
     userId: fields.userId,
     reservedAt: fields.ts,
   });
 
+  if (outcome === 'conflict') {
+    await redis.incr(saleRedisKeys(saleId).stock);
+    logger.error(log, 'reservation conflicts with a live order for the user; unit returned');
+    return;
+  }
+
   const completed = await completeOrderStub(pool, fields.reservationId);
 
   logger.info(
-    {
-      saleId,
-      orderId: fields.reservationId,
-      userId: fields.userId,
-      inserted,
-      completed,
-    },
-    inserted ? 'reservation persisted' : 'reservation redelivered',
+    { ...log, outcome, completed },
+    outcome === 'inserted' ? 'reservation persisted' : 'reservation redelivered',
   );
 }
 

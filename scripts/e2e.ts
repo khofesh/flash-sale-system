@@ -44,7 +44,10 @@ async function main(): Promise<void> {
   }
   const sale = (await saleResponse.json()) as SaleView;
   if (sale.status !== 'ACTIVE') {
-    throw new Error(`Expected an ACTIVE sale, got ${sale.status}`);
+    throw new Error(
+      `Expected an ACTIVE sale, got ${sale.status}. A previous run left orders on a sale that ` +
+        'is no longer live; recreate the stack (pnpm stack:down && pnpm stack:up) or run pnpm stress.',
+    );
   }
   console.log(`sale is ACTIVE with ${sale.remainingStock}/${sale.totalStock} units`);
 
