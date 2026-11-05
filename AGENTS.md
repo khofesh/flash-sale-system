@@ -23,6 +23,7 @@ Next is **PLAN Phase 1** (sale configuration and status). Don't start a later ph
 - Redis 7 with AOF everysec. Redis decides purchases, and its stream (`XADD`) is the outbox.
 - Postgres 16 is the system of record for sales, orders, `saga_events` and `processed_messages`.
 - SQS via **Floci** (`floci/floci:2.4.0`, port 4566). We don't use LocalStack. ElasticMQ is the fallback.
+- Containers: rootless **Podman**, driven through the `docker` CLI and Compose via `DOCKER_HOST` (see `.envrc`). Under SELinux, never use `:z` on socket mounts; use `security_opt: label=disable`.
 - Tests: Vitest for unit tests, Testcontainers for integration tests, and k6 for stress tests (run through the `grafana/k6` image).
 
 ## Layout (target, per SPEC §11)

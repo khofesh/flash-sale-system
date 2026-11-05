@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const scenario = process.argv.slice(2).find((argument) => argument !== '--') ?? 'smoke';
@@ -22,13 +23,12 @@ const result = spawnSync(
     'host.docker.internal:host-gateway',
     '-e',
     `BASE_URL=${baseUrl}`,
-    '-v',
-    `${scriptPath}:/scripts/${scenario}.js:ro`,
     'grafana/k6:0.57.0',
     'run',
-    `/scripts/${scenario}.js`,
+    '-',
   ],
-  { stdio: 'inherit' },
+  // The script goes in on stdin: no bind mount, so no SELinux relabeling under Podman.
+  { input: readFileSync(scriptPath), stdio: ['pipe', 'inherit', 'inherit'] },
 );
 
 process.exit(result.status ?? 1);

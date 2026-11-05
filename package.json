@@ -11,11 +11,11 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --config vitest.config.ts",
-    "test:int": "vitest run --config vitest.int.config.ts",
-    "stack:up": "docker compose -f infra/docker-compose.yml up -d --build --wait",
-    "stack:down": "docker compose -f infra/docker-compose.yml down -v",
+    "test:int": ". ./.envrc && vitest run --config vitest.int.config.ts",
+    "stack:up": ". ./.envrc && docker compose -f infra/docker-compose.yml up -d --build --wait",
+    "stack:down": ". ./.envrc && docker compose -f infra/docker-compose.yml down -v",
     "e2e": "tsx scripts/e2e.ts",
-    "stress": "tsx scripts/stress.ts",
+    "stress": ". ./.envrc && tsx scripts/stress.ts",
     "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev"
   },
   "devDependencies": {

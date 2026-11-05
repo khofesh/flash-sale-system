@@ -50,6 +50,12 @@ services:
     image: floci/floci:2.4.0
     ports:
       - '4566:4566'
+    # Rootless Podman API socket, needed by the Floci web console. label=disable lets
+    # the container use the socket without relabeling it (never use :z on a socket).
+    volumes:
+      - ${XDG_RUNTIME_DIR:?set XDG_RUNTIME_DIR}/podman/podman.sock:/var/run/docker.sock
+    security_opt:
+      - label=disable
     healthcheck:
       test: ['CMD-SHELL', "timeout 1 bash -c '</dev/tcp/127.0.0.1/4566'"]
       interval: 5s
@@ -204,7 +210,8 @@ services:
     ports:
       - '8080:80'
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # :z relabels this one config file so SELinux lets the container read it.
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro,z
     depends_on:
       api:
         condition: service_healthy
