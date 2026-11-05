@@ -1,0 +1,40 @@
+{
+  "name": "flash-sale-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run --config vitest.config.ts",
+    "test:int": ". ./.envrc && vitest run --config vitest.int.config.ts",
+    "stack:up": ". ./.envrc && docker compose -f infra/docker-compose.yml up -d --build --wait",
+    "stack:down": ". ./.envrc && docker compose -f infra/docker-compose.yml down -v",
+    "e2e": "tsx scripts/e2e.ts",
+    "stress": ". ./.envrc && tsx scripts/stress.ts",
+    "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@fss/config": "workspace:*",
+    "@fss/core": "workspace:*",
+    "@fss/infra": "workspace:*",
+    "@testcontainers/postgresql": "12.2.1",
+    "@testcontainers/redis": "12.2.1",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "pino-pretty": "13.2.0",
+    "prettier": "3.9.10",
+    "testcontainers": "12.2.1",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.1.0"
+  }
+}

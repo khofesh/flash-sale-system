@@ -379,7 +379,7 @@ A single page, React 18 + Vite + TypeScript, with no UI framework requirement.
 │   ├── init-queues.ts  queue + DLQ bootstrap (queue-init service)
 │   └── migrations/     SQL
 ├── stress/             k6 scripts
-├── doc/                idea.md, SPEC.md, architecture diagram
+├── doc/                SPEC.md, architecture diagram
 └── README.md
 ```
 
