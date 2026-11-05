@@ -1,12 +1,13 @@
 # Flash Sale System — Technical Specification
 
-Status: Draft v0.1 · Source: [`doc/idea.md`](./idea.md)
+Status: Draft v0.1
 
 ---
 
 ## 1. Goals and non-goals
 
 ### Goals
+
 - Sell **one product** with a **fixed stock** (N units) during a **configurable time window**.
 - Allow **at most one unit per user** and **never oversell**, even under heavy concurrent load.
 - Keep the purchase hot path **fast and horizontally scalable** (target: ≥ 5k req/s on a laptop with several API replicas).
@@ -15,6 +16,7 @@ Status: Draft v0.1 · Source: [`doc/idea.md`](./idea.md)
 - Model **payment and shipping as an asynchronous saga** with compensation, so that a failed payment returns the unit to stock.
 
 ### Non-goals
+
 - Real authentication. Users are identified by a free-text `userId` (username/email), as the brief specifies.
 - Real payment or shipping providers. Both are mocks with configurable latency and failure rates.
 - Multiple products, carts, or multiple sales running at once. The schema keeps a `saleId` so these can be added later.
@@ -24,13 +26,13 @@ Status: Draft v0.1 · Source: [`doc/idea.md`](./idea.md)
 
 ## 2. Glossary
 
-| Term | Meaning |
-|---|---|
-| **Sale** | One flash sale event: `{ id, productId, startsAt, endsAt, totalStock }`. |
-| **Reservation** | An atomic claim on one unit for one user, made in Redis on the hot path. |
-| **Order** | The durable record in Postgres that is created from a reservation and moves through the saga. |
-| **Saga** | The multi-step async flow reservation → payment → shipping, with compensating actions when a step fails. |
-| **Compensation** | Undoing an earlier step. The main one is releasing a reservation back to stock. |
+| Term             | Meaning                                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------------------------------- |
+| **Sale**         | One flash sale event: `{ id, productId, startsAt, endsAt, totalStock }`.                                 |
+| **Reservation**  | An atomic claim on one unit for one user, made in Redis on the hot path.                                 |
+| **Order**        | The durable record in Postgres that is created from a reservation and moves through the saga.            |
+| **Saga**         | The multi-step async flow reservation → payment → shipping, with compensating actions when a step fails. |
+| **Compensation** | Undoing an earlier step. The main one is releasing a reservation back to stock.                          |
 
 ---
 
@@ -70,17 +72,17 @@ flowchart LR
 
 ### 3.2 Components
 
-| Component | Tech | Responsibility | Scaling |
-|---|---|---|---|
-| **Web** | React + Vite + TypeScript | Show sale status, take `userId`, Buy Now, poll order status. | Static files |
-| **Load balancer** | nginx | Round-robin to API replicas; per-IP rate limit (`limit_req`). | 1 (could be N behind DNS) |
-| **API** | Node.js + **Fastify** + TypeScript | Stateless HTTP. Validates input, runs the reserve Lua script, serves status reads. | Horizontal, stateless |
-| **Redis** | Redis 7 (AOF `everysec`) | Source of truth **for the hot path**: remaining stock, buyers set, reservations stream (outbox). | Single primary (see §9.3) |
-| **Postgres** | Postgres 16 | **Durable** source of truth: sales, orders, saga state. Unique constraints are the last line of defence against duplicates. | Single primary |
-| **Order Orchestrator** | Node.js worker | Reads the reservations stream, persists orders, and drives the saga state machine. | N consumers in a Redis consumer group |
-| **Payment service** | Node.js worker | Mock charge with configurable latency and failure rate. Idempotent on `orderId`. | N consumers on the SQS queue |
-| **Shipping service** | Node.js worker | Mock shipment creation. Idempotent on `orderId`. | N consumers on the SQS queue |
-| **Message broker** | SQS API, served locally by **ElasticMQ** (see §10) | Queues between saga participants, with DLQs. | — |
+| Component              | Tech                                               | Responsibility                                                                                                              | Scaling                               |
+| ---------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| **Web**                | React + Vite + TypeScript                          | Show sale status, take `userId`, Buy Now, poll order status.                                                                | Static files                          |
+| **Load balancer**      | nginx                                              | Round-robin to API replicas; per-IP rate limit (`limit_req`).                                                               | 1 (could be N behind DNS)             |
+| **API**                | Node.js + **Fastify** + TypeScript                 | Stateless HTTP. Validates input, runs the reserve Lua script, serves status reads.                                          | Horizontal, stateless                 |
+| **Redis**              | Redis 7 (AOF `everysec`)                           | Source of truth **for the hot path**: remaining stock, buyers set, reservations stream (outbox).                            | Single primary (see §9.3)             |
+| **Postgres**           | Postgres 16                                        | **Durable** source of truth: sales, orders, saga state. Unique constraints are the last line of defence against duplicates. | Single primary                        |
+| **Order Orchestrator** | Node.js worker                                     | Reads the reservations stream, persists orders, and drives the saga state machine.                                          | N consumers in a Redis consumer group |
+| **Payment service**    | Node.js worker                                     | Mock charge with configurable latency and failure rate. Idempotent on `orderId`.                                            | N consumers on the SQS queue          |
+| **Shipping service**   | Node.js worker                                     | Mock shipment creation. Idempotent on `orderId`.                                                                            | N consumers on the SQS queue          |
+| **Message broker**     | SQS API, served locally by **ElasticMQ** (see §10) | Queues between saga participants, with DLQs.                                                                                | —                                     |
 
 ### 3.3 Design decisions
 
@@ -123,6 +125,7 @@ stateDiagram-v2
 ```
 
 **Rules**
+
 - Transitions are applied with optimistic concurrency (`UPDATE ... WHERE id=$1 AND status=$expected`). If zero rows are updated, the message is a duplicate or arrived out of order. It is acked and ignored.
 - **Releasing stock** (compensation) runs a Lua script that, only if the user is in the buyers set, `SREM`s the user and `INCR`s stock. It is idempotent: calling it twice releases once.
 - After a release, the user may try again while the sale is ACTIVE and stock remains. This is an explicit product decision: a failed payment should not lock someone out.
@@ -134,12 +137,12 @@ stateDiagram-v2
 
 ### 5.1 Redis keys (per sale)
 
-| Key | Type | Contents |
-|---|---|---|
-| `sale:{id}:meta` | Hash | `startsAt`, `endsAt` (epoch ms), `totalStock` |
-| `sale:{id}:stock` | String (int) | Remaining units |
-| `sale:{id}:buyers` | Set | `userId`s holding an active reservation or order |
-| `sale:{id}:reservations` | Stream | `{ reservationId, userId, ts }`, the outbox |
+| Key                      | Type         | Contents                                         |
+| ------------------------ | ------------ | ------------------------------------------------ |
+| `sale:{id}:meta`         | Hash         | `startsAt`, `endsAt` (epoch ms), `totalStock`    |
+| `sale:{id}:stock`        | String (int) | Remaining units                                  |
+| `sale:{id}:buyers`       | Set          | `userId`s holding an active reservation or order |
+| `sale:{id}:reservations` | Stream       | `{ reservationId, userId, ts }`, the outbox      |
 
 All keys for a sale share the `{id}` hash tag, so they live in one slot if Redis Cluster is used later.
 
@@ -216,6 +219,7 @@ CREATE TABLE processed_messages (        -- consumer-side idempotency
 Base path `/api`. JSON in and out. Validation uses Fastify JSON Schema (TypeBox).
 
 ### 6.1 `GET /api/sale`
+
 Returns the sale status. Cached in-process for 250 ms per replica so status polling doesn't hammer Redis.
 
 ```json
@@ -225,24 +229,27 @@ Returns the sale status. Cached in-process for 250 ms per replica so status poll
 ```
 
 ### 6.2 `POST /api/purchases`
+
 ```json
 request  { "userId": "alice@example.com" }
 ```
+
 - `userId`: trimmed and lowercased, 1–254 characters, `^[\w.@+-]+$`.
 - An optional `Idempotency-Key` header. A retry with the same key returns the original response (cached in Redis for 10 min).
 
-| Outcome | HTTP | Body `code` |
-|---|---|---|
-| Reserved | **202** | `RESERVED` + `orderId` |
+| Outcome                  | HTTP    | Body `code`                     |
+| ------------------------ | ------- | ------------------------------- |
+| Reserved                 | **202** | `RESERVED` + `orderId`          |
 | Already has a live order | **409** | `ALREADY_PURCHASED` + `orderId` |
-| Sold out | **410** | `SOLD_OUT` |
-| Not started | **403** | `NOT_STARTED` |
-| Ended | **403** | `ENDED` |
-| Invalid input | **400** | `VALIDATION_ERROR` |
-| Rate limited (nginx/API) | **429** | `RATE_LIMITED` |
-| Redis unavailable | **503** | `UNAVAILABLE` + `Retry-After` |
+| Sold out                 | **410** | `SOLD_OUT`                      |
+| Not started              | **403** | `NOT_STARTED`                   |
+| Ended                    | **403** | `ENDED`                         |
+| Invalid input            | **400** | `VALIDATION_ERROR`              |
+| Rate limited (nginx/API) | **429** | `RATE_LIMITED`                  |
+| Redis unavailable        | **503** | `UNAVAILABLE` + `Retry-After`   |
 
 ### 6.3 `GET /api/purchases/:userId`
+
 Reads Postgres first, then falls back to Redis, because a reservation can exist before the orchestrator has persisted it.
 
 ```json
@@ -250,9 +257,11 @@ Reads Postgres first, then falls back to Redis, because a reservation can exist 
       "status": "PAYMENT_PENDING", "updatedAt": "…" }
 404 { "secured": false }
 ```
+
 `secured` is `true` for `RESERVED | PAYMENT_PENDING | PAID | SHIPPING_PENDING | COMPLETED`.
 
 ### 6.4 Operations endpoints
+
 - `GET /healthz` (liveness) and `GET /readyz` (Redis + PG reachable).
 - `POST /admin/sale` (dev only, guarded by `ADMIN_TOKEN`): create or reset a sale. Seeds Postgres, then Redis.
 - `GET /admin/reconcile`: checks the stock invariant from §5.3 and reports any drift.
@@ -266,20 +275,20 @@ Every message carries an envelope:
 
 ```ts
 interface Envelope<T> {
-  messageId: string;      // uuid; idempotency key for consumers
+  messageId: string; // uuid; idempotency key for consumers
   orderId: string;
-  type: string;           // e.g. 'payment.requested'
+  type: string; // e.g. 'payment.requested'
   attempt: number;
   occurredAt: string;
   payload: T;
 }
 ```
 
-| Queue | Producer → Consumer | Types |
-|---|---|---|
-| `payment-requests` | Orchestrator → Payment | `payment.requested`, `payment.refund_requested` |
-| `shipping-requests` | Orchestrator → Shipping | `shipping.requested` |
-| `order-events` | Payment/Shipping → Orchestrator | `payment.succeeded`, `payment.failed`, `payment.refunded`, `shipping.succeeded`, `shipping.failed` |
+| Queue               | Producer → Consumer             | Types                                                                                              |
+| ------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `payment-requests`  | Orchestrator → Payment          | `payment.requested`, `payment.refund_requested`                                                    |
+| `shipping-requests` | Orchestrator → Shipping         | `shipping.requested`                                                                               |
+| `order-events`      | Payment/Shipping → Orchestrator | `payment.succeeded`, `payment.failed`, `payment.refunded`, `shipping.succeeded`, `shipping.failed` |
 
 - **Delivery:** at-least-once. Each consumer records `messageId` in `processed_messages` in the same transaction as its side effect.
 - **Retries:** SQS visibility timeout 30 s, `maxReceiveCount` 5, then a per-queue **DLQ**. DLQ depth is exposed as a metric.
@@ -302,34 +311,37 @@ A single page, React 18 + Vite + TypeScript, with no UI framework requirement.
 ## 9. Non-functional requirements
 
 ### 9.1 Throughput and latency targets (local, docker compose, 4 API replicas)
-| Metric | Target |
-|---|---|
+
+| Metric                           | Target        |
+| -------------------------------- | ------------- |
 | `POST /api/purchases` throughput | ≥ 5,000 req/s |
-| p99 latency (purchase) | < 50 ms |
-| Error rate (non-4xx) | < 0.1 % |
-| Oversell | **0**, always |
-| Duplicate per user | **0**, always |
+| p99 latency (purchase)           | < 50 ms       |
+| Error rate (non-4xx)             | < 0.1 %       |
+| Oversell                         | **0**, always |
+| Duplicate per user               | **0**, always |
 
 ### 9.2 Bottlenecks and mitigations
-| Bottleneck | Mitigation |
-|---|---|
-| DB write contention on one stock row | Stock lives in Redis. The DB is written asynchronously, one row per order, with no hot row. |
-| Redis single thread | The script is O(1) at about 10 µs, so one Redis handles roughly 100k scripts/s. Per-IP rate limiting at nginx sheds abusive load. |
-| Status polling storms | 250 ms in-process cache per replica, plus a `Cache-Control: max-age=1` header. |
-| Thundering herd after sell-out | A per-replica in-memory `soldOut` flag, set when a script returns `SOLD_OUT`, short-circuits with 410 and skips Redis (re-checked every 1 s). |
-| Node event loop | Fastify, no sync work on the hot path, connection pooling (ioredis, pg Pool). |
+
+| Bottleneck                           | Mitigation                                                                                                                                    |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| DB write contention on one stock row | Stock lives in Redis. The DB is written asynchronously, one row per order, with no hot row.                                                   |
+| Redis single thread                  | The script is O(1) at about 10 µs, so one Redis handles roughly 100k scripts/s. Per-IP rate limiting at nginx sheds abusive load.             |
+| Status polling storms                | 250 ms in-process cache per replica, plus a `Cache-Control: max-age=1` header.                                                                |
+| Thundering herd after sell-out       | A per-replica in-memory `soldOut` flag, set when a script returns `SOLD_OUT`, short-circuits with 410 and skips Redis (re-checked every 1 s). |
+| Node event loop                      | Fastify, no sync work on the hot path, connection pooling (ioredis, pg Pool).                                                                 |
 
 ### 9.3 Failure modes
-| Failure | Behaviour |
-|---|---|
-| API replica crashes | nginx routes around it. The API is stateless, so nothing is lost. |
-| Redis crashes | Purchases return 503 (fail closed, never oversell). With AOF `everysec`, at most about 1 s of reservations can be lost on restart. A **rebuild job** recomputes `stock` and `buyers` from Postgres plus unconsumed stream entries before traffic resumes. Production would use Redis Sentinel or a managed replica with `WAIT` for stronger durability. This trade-off is documented in the README. |
-| Orchestrator crashes mid-message | The stream entry stays pending. Another consumer reclaims it with `XAUTOCLAIM` after 30 s. The insert is idempotent (`ON CONFLICT DO NOTHING`). |
-| Postgres down | Purchases keep working (Redis only). The orchestrator backs off and the stream buffers events. Status reads fall back to Redis. |
-| Payment or shipping service down | Messages wait in SQS. The payment timeout sweeper cancels and releases stock if it's down too long. |
-| Poison message | Goes to the DLQ after 5 receives and is alerted on through metrics. |
-| Duplicate or out-of-order messages | `processed_messages` plus conditional state transitions (§4.2). |
-| Graceful shutdown | On SIGTERM: stop accepting, drain in-flight requests and messages, then exit (Fastify `close`, consumer stop). |
+
+| Failure                            | Behaviour                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API replica crashes                | nginx routes around it. The API is stateless, so nothing is lost.                                                                                                                                                                                                                                                                                                                                   |
+| Redis crashes                      | Purchases return 503 (fail closed, never oversell). With AOF `everysec`, at most about 1 s of reservations can be lost on restart. A **rebuild job** recomputes `stock` and `buyers` from Postgres plus unconsumed stream entries before traffic resumes. Production would use Redis Sentinel or a managed replica with `WAIT` for stronger durability. This trade-off is documented in the README. |
+| Orchestrator crashes mid-message   | The stream entry stays pending. Another consumer reclaims it with `XAUTOCLAIM` after 30 s. The insert is idempotent (`ON CONFLICT DO NOTHING`).                                                                                                                                                                                                                                                     |
+| Postgres down                      | Purchases keep working (Redis only). The orchestrator backs off and the stream buffers events. Status reads fall back to Redis.                                                                                                                                                                                                                                                                     |
+| Payment or shipping service down   | Messages wait in SQS. The payment timeout sweeper cancels and releases stock if it's down too long.                                                                                                                                                                                                                                                                                                 |
+| Poison message                     | Goes to the DLQ after 5 receives and is alerted on through metrics.                                                                                                                                                                                                                                                                                                                                 |
+| Duplicate or out-of-order messages | `processed_messages` plus conditional state transitions (§4.2).                                                                                                                                                                                                                                                                                                                                     |
+| Graceful shutdown                  | On SIGTERM: stop accepting, drain in-flight requests and messages, then exit (Fastify `close`, consumer stop).                                                                                                                                                                                                                                                                                      |
 
 ---
 
@@ -373,6 +385,7 @@ A single page, React 18 + Vite + TypeScript, with no UI framework requirement.
 Tooling: pnpm workspaces, TypeScript (strict), ESLint and Prettier, Vitest, Testcontainers.
 
 ### Configuration (env)
+
 `SALE_ID`, `SALE_STARTS_AT`, `SALE_ENDS_AT`, `SALE_TOTAL_STOCK`, `REDIS_URL`, `DATABASE_URL`, `SQS_ENDPOINT`, `AWS_REGION`, `PAYMENT_FAILURE_RATE` (default 0.1), `PAYMENT_LATENCY_MS` (default 200–800), `SHIPPING_FAILURE_RATE` (default 0.02), `PAYMENT_TIMEOUT_MS`, `ADMIN_TOKEN`, `RATE_LIMIT_RPS`.
 
 ---
@@ -380,12 +393,14 @@ Tooling: pnpm workspaces, TypeScript (strict), ESLint and Prettier, Vitest, Test
 ## 12. Testing
 
 ### 12.1 Unit tests (Vitest, no I/O)
+
 - Sale status derivation at the window boundaries (`startsAt - 1ms`, `startsAt`, `endsAt - 1ms`, `endsAt`).
 - `userId` normalisation and validation.
 - Saga state machine: every legal transition, rejection of illegal ones, and compensation paths (payment fail → release; shipping fail → refund → release; late payment success after cancel → refund).
 - Response mapping from reserve results to HTTP codes.
 
 ### 12.2 Integration tests (Vitest + Testcontainers: Redis, Postgres, ElasticMQ)
+
 - The reserve Lua script: happy path, duplicate user, sold out, outside the window, release idempotency.
 - **Concurrency:** fire 1,000 parallel `reserve` calls for stock = 100 with 1,000 distinct users → exactly 100 `RESERVED` and 900 `SOLD_OUT`, stock = 0.
 - **Same user hammering:** 500 parallel calls for one user → exactly 1 `RESERVED`.
@@ -394,12 +409,13 @@ Tooling: pnpm workspaces, TypeScript (strict), ESLint and Prettier, Vitest, Test
 - Orchestrator crash simulation: consume without ack, kill it, start a new consumer → order persisted exactly once.
 
 ### 12.3 Stress tests (k6, against the full docker compose stack)
-| Scenario | Setup | Pass criteria |
-|---|---|---|
-| **Spike** | 10k virtual users, distinct ids, stock 1,000, ramp to peak in 5 s | Exactly 1,000 × 202; the rest 410; p99 < 50 ms; 0 × 5xx |
-| **Same-user abuse** | 2k VUs sharing 50 user ids | ≤ 50 reservations; one per id |
-| **Soak** | 2k req/s for 5 min | Steady latency, no memory growth, queue lag recovers |
-| **Chaos** | Spike plus `docker kill` of one API replica and one orchestrator mid-run | No oversell; all reservations eventually persisted |
+
+| Scenario            | Setup                                                                    | Pass criteria                                           |
+| ------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------- |
+| **Spike**           | 10k virtual users, distinct ids, stock 1,000, ramp to peak in 5 s        | Exactly 1,000 × 202; the rest 410; p99 < 50 ms; 0 × 5xx |
+| **Same-user abuse** | 2k VUs sharing 50 user ids                                               | ≤ 50 reservations; one per id                           |
+| **Soak**            | 2k req/s for 5 min                                                       | Steady latency, no memory growth, queue lag recovers    |
+| **Chaos**           | Spike plus `docker kill` of one API replica and one orchestrator mid-run | No oversell; all reservations eventually persisted      |
 
 After every run, `stress/verify.ts` queries Postgres and Redis and asserts:
 `live orders ≤ totalStock`, `count(distinct user_id) = count(live orders)`, the §5.3 invariant holds, and the DLQ is empty. k6 summary JSON plus the verification output are saved to `stress/results/`, and the README explains how to read them.
@@ -417,7 +433,7 @@ After every run, `stress/verify.ts` queries Postgres and Redis and asserts:
 
 ## 14. Delivery milestones
 
-1. **Core (enough to meet the brief):** API, Redis Lua reserve, Postgres persistence via the stream, React page, unit and integration tests, spike stress test. *Payment is simulated as "instant success" here.*
+1. **Core (enough to meet the brief):** API, Redis Lua reserve, Postgres persistence via the stream, React page, unit and integration tests, spike stress test. _Payment is simulated as "instant success" here._
 2. **Saga:** ElasticMQ, payment and shipping workers, compensation, timeout sweeper, DLQs, saga tests.
 3. **Hardening:** rate limiting, sold-out short-circuit, metrics, chaos stress test, Redis rebuild job, README polish.
 
@@ -427,6 +443,6 @@ Milestone 1 alone satisfies `idea.md`. Milestones 2–3 go beyond it and show th
 
 ## 15. Open questions
 
-1. Should a user whose payment failed be allowed to retry? *Default in this spec: yes, while stock remains.*
-2. Should "secured" mean *reserved* or *paid*? *Default: reserved (counted from the moment of the Redis decision), with payment status shown separately.*
-3. Is a waiting-room or virtual queue in front of the API (e.g. a token bucket that admits N users/s) wanted, or is per-IP rate limiting enough? *Default: rate limiting only. The waiting room is listed as future work.*
+1. Should a user whose payment failed be allowed to retry? _Default in this spec: yes, while stock remains._
+2. Should "secured" mean _reserved_ or _paid_? _Default: reserved (counted from the moment of the Redis decision), with payment status shown separately._
+3. Is a waiting-room or virtual queue in front of the API (e.g. a token bucket that admits N users/s) wanted, or is per-IP rate limiting enough? _Default: rate limiting only. The waiting room is listed as future work._
