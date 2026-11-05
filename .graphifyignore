@@ -1,0 +1,33 @@
+# graphify ignore rules (gitignore syntax). .gitignore is also honored.
+
+# graphify's own output
+graphify-out/
+
+# Agent / tool config
+.claude/
+.git/
+
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.turbo/
+.vite/
+*.tsbuildinfo
+
+# Lockfiles and generated artifacts
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+*.min.js
+*.map
+
+# Stress test results and logs
+stress/results/
+*.log
+
+# Local scratch (the original brief lives in temp/; uncomment to include it)
+temp/
+# !temp/idea.md

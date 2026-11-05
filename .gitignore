@@ -152,3 +152,18 @@ vite.config.ts.timestamp-*
 .turbo
 
 temp/
+graphify-out/cache/
+graphify-out/.graphify_*
+graphify-out/manifest.json
+graphify-out/cost.json
+graphify-out/graph.html
+graphify-out/GRAPH_TREE.html
+graphify-out/graph.svg
+graphify-out/graph.graphml
+graphify-out/cypher.txt
+graphify-out/obsidian/
+graphify-out/wiki/
+graphify-out/memory/
+graphify-out/reflections/
+graphify-out/*.tmp
+graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
