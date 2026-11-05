@@ -188,6 +188,9 @@ importers:
       '@aws-sdk/client-sqs':
         specifier: 3.1162.0
         version: 3.1162.0
+      '@fss/core':
+        specifier: workspace:*
+        version: link:../core
       ioredis:
         specifier: 6.0.0
         version: 6.0.0

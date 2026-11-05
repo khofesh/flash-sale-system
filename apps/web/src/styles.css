@@ -51,6 +51,90 @@ h1 {
   color: #475569;
 }
 
+.sale-banner {
+  margin-bottom: 24px;
+  padding: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.06);
+}
+
+.sale-banner.upcoming {
+  border-color: #c7d2fe;
+  background: linear-gradient(135deg, rgba(238, 242, 255, 0.95), rgba(255, 255, 255, 0.9));
+}
+
+.sale-banner.active {
+  border-color: #bbf7d0;
+  background: linear-gradient(135deg, rgba(240, 253, 244, 0.95), rgba(255, 255, 255, 0.9));
+}
+
+.sale-banner.sold_out {
+  border-color: #fde68a;
+  background: linear-gradient(135deg, rgba(255, 251, 235, 0.95), rgba(255, 255, 255, 0.9));
+}
+
+.sale-banner.ended {
+  border-color: #e2e8f0;
+  background: rgba(248, 250, 252, 0.95);
+}
+
+.sale-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sale-heading h2 {
+  margin: 0;
+  font-size: clamp(24px, 3vw, 32px);
+  letter-spacing: -0.02em;
+}
+
+.sale-status {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.sale-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.sale-metrics span {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.sale-metrics strong {
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sale-metrics small {
+  font-size: 14px;
+  font-weight: 600;
+  color: #64748b;
+}
+
 .hello-form {
   padding: 24px;
   border: 1px solid #e2e8f0;

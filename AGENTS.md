@@ -11,9 +11,9 @@ A flash sale system: one product, limited stock, a fixed time window, one item p
 
 ## Status
 
-**PLAN Phase 0 is complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Its "Verify" block passes, including `pnpm e2e`, `pnpm stress -- smoke`, and the orchestrator-restart check.
+**PLAN Phases 0 and 1 are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Its "Verify" block passes, including `pnpm e2e`, `pnpm stress -- smoke`, and the orchestrator-restart check. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown.
 
-Next is **PLAN Phase 1** (sale configuration and status). Don't start a later phase until the current phase's "Verify" block passes.
+Next is **PLAN Phase 2** (atomic reservation). Don't start a later phase until the current phase's "Verify" block passes.
 
 ## Stack
 

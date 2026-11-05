@@ -24,7 +24,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
   | `pnpm lint` | ESLint + Prettier check |
   | `pnpm test` | Unit tests (no Docker) |
   | `pnpm test:int` | Integration tests (Testcontainers, needs Docker) |
-  | `pnpm stack:up` / `pnpm stack:down` | `docker compose up -d --build --wait` / `down -v` |
+  | `pnpm stack:up` / `pnpm stack:down` | `podman-compose up -d --build --wait` / `down -v` |
   | `pnpm e2e` | Scripted end-to-end check against the running stack |
   | `pnpm stress` | k6 + post-run verification |
   | `pnpm dev` | API + web in watch mode against compose infrastructure |
@@ -35,7 +35,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
 
 ## Phase 0: Walking skeleton ("hello world" end-to-end)
 
-**Goal:** `docker compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
+**Goal:** `podman-compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
 
 ### 0.1 Repo scaffolding
 - [x] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`24`), `.gitignore`, `.env.example`.
@@ -86,13 +86,13 @@ pnpm stack:down
 
 ## Phase 1: Sale configuration and status (SPEC §4.1, §6.1, §6.4)
 
-- [ ] Migration `0001_sales.sql` (`sales` table, SPEC §5.3).
-- [ ] `core/sale.ts`: `deriveSaleStatus(meta, stock, now)`, pure.
-- [ ] `infra/saleRepo`: seed from env (`SALE_*`) on start if missing, mirror to Redis `sale:{id}:meta` and `:stock`.
-- [ ] `POST /admin/sale` (guarded by `ADMIN_TOKEN`): create or reset a sale (PG first, then Redis; clears buyers and stream).
-- [ ] `GET /api/sale` with a 250 ms in-process cache and `serverTime`.
-- [ ] Web: status banner with countdown (corrected for clock offset) and remaining stock.
-- [ ] Tests: status at the 4 window boundaries (unit), and `/api/sale` via `fastify.inject` (integration).
+- [x] Migration `0001_sales.sql` (`sales` table, SPEC §5.3).
+- [x] `core/sale.ts`: `deriveSaleStatus(meta, stock, now)`, pure.
+- [x] `infra/saleRepo`: seed from env (`SALE_*`) on start if missing, mirror to Redis `sale:{id}:meta` and `:stock`.
+- [x] `POST /admin/sale` (guarded by `ADMIN_TOKEN`): create or reset a sale (PG first, then Redis; clears buyers and stream).
+- [x] `GET /api/sale` with a 250 ms in-process cache and `serverTime`.
+- [x] Web: status banner with countdown (corrected for clock offset) and remaining stock.
+- [x] Tests: status at the 4 window boundaries (unit), and `/api/sale` via `fastify.inject` (integration).
 
 **Verify:** reset a sale starting 30 s from now with `curl`. The UI counts down UPCOMING → ACTIVE. Reset with `endsAt` in the past → ENDED.
 

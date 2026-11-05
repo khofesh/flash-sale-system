@@ -1,5 +1,5 @@
 import { loadConfig } from '@fss/config';
-import { onShutdown, createLogger, createPgPool, createRedis } from '@fss/infra';
+import { onShutdown, createLogger, createPgPool, createRedis, seedSale } from '@fss/infra';
 import { buildApp } from './app.js';
 
 const config = loadConfig();
@@ -8,7 +8,34 @@ const logger = createLogger(service, config.LOG_LEVEL);
 
 const redis = createRedis(config.REDIS_URL);
 const pool = createPgPool(config.DATABASE_URL);
-const app = buildApp({ redis, pool, logger });
+
+try {
+  const sale = await seedSale(pool, redis, {
+    id: config.SALE_ID,
+    productId: config.SALE_PRODUCT_ID,
+    startsAt: config.SALE_STARTS_AT,
+    endsAt: config.SALE_ENDS_AT,
+    totalStock: config.SALE_TOTAL_STOCK,
+  });
+  logger.info(
+    { saleId: sale.id, startsAt: sale.startsAt, endsAt: sale.endsAt, totalStock: sale.totalStock },
+    'sale seeded',
+  );
+} catch (error) {
+  logger.error({ err: error }, 'failed to seed sale');
+  await redis.quit();
+  await pool.end();
+  process.exit(1);
+}
+
+const app = buildApp({
+  redis,
+  pool,
+  logger,
+  saleId: config.SALE_ID,
+  productId: config.SALE_PRODUCT_ID,
+  adminToken: config.ADMIN_TOKEN,
+});
 
 onShutdown(logger, async () => {
   await app.close();
