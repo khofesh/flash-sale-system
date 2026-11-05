@@ -13,13 +13,13 @@ export const options = {
 };
 
 export default function () {
-  const payload = JSON.stringify({ name: `smoke-${__VU}-${__ITER}` });
-  const response = http.post(`${baseUrl}/api/hello`, payload, {
+  const userId = `smoke-${__VU}-${__ITER}`;
+  const response = http.post(`${baseUrl}/api/purchases`, JSON.stringify({ userId }), {
     headers: { 'Content-Type': 'application/json' },
   });
 
   check(response, {
-    'POST /api/hello is 202': (res) => res.status === 202,
+    'POST /api/purchases is 202': (res) => res.status === 202,
   });
 
   sleep(0.5);

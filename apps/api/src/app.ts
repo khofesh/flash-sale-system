@@ -10,14 +10,17 @@ import {
 } from '@fss/core';
 import {
   MAX_TOTAL_STOCK,
+  RedisReservationStore,
   SaleHasOrdersError,
   getSaleSnapshot,
   resetSale,
   type Logger,
   type Pool,
   type Redis,
+  type ReservationStore,
   type SaleSnapshot,
 } from '@fss/infra';
+import { registerPurchaseRoutes } from './purchases.js';
 
 interface BuildAppDeps {
   redis: Redis;
@@ -28,6 +31,8 @@ interface BuildAppDeps {
   /** Enables `POST /admin/sale`. When unset, the admin routes are not registered. */
   adminToken?: string;
   saleCacheMs?: number;
+  /** Used by the purchase routes; defaults to the Redis-backed store. */
+  reservations?: ReservationStore;
 }
 
 interface HelloRow {
@@ -67,6 +72,7 @@ export function buildApp({
   productId = 'flash-tshirt',
   adminToken,
   saleCacheMs = 250,
+  reservations = new RedisReservationStore(redis),
 }: BuildAppDeps) {
   const app = Fastify({ loggerInstance: logger });
 
@@ -170,6 +176,14 @@ export function buildApp({
     };
 
     return view;
+  });
+
+  registerPurchaseRoutes(app, {
+    redis,
+    pool,
+    logger,
+    saleId,
+    reservations,
   });
 
   if (adminToken) {

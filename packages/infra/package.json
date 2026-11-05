@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json && mkdir -p dist/redis && cp src/redis/*.lua dist/redis/"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1162.0",

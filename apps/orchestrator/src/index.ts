@@ -1,12 +1,5 @@
 import { loadConfig } from '@fss/config';
-import {
-  onShutdown,
-  createLogger,
-  createPgPool,
-  createRedis,
-  createSqsClient,
-  SqsBus,
-} from '@fss/infra';
+import { onShutdown, createLogger, createPgPool, createRedis } from '@fss/infra';
 import { startOrchestrator } from './worker.js';
 
 const config = loadConfig();
@@ -15,17 +8,13 @@ const logger = createLogger(service, config.LOG_LEVEL);
 
 const redis = createRedis(config.REDIS_URL);
 const pool = createPgPool(config.DATABASE_URL);
-const bus = new SqsBus(
-  createSqsClient({
-    endpoint: config.SQS_ENDPOINT,
-    region: config.AWS_REGION,
-    accessKeyId: config.AWS_ACCESS_KEY_ID,
-    secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
-  }),
-  logger,
-);
 
-const stop = await startOrchestrator({ redis, pool, bus, logger });
+const stop = await startOrchestrator({
+  redis,
+  pool,
+  logger,
+  saleId: config.SALE_ID,
+});
 
 onShutdown(logger, async () => {
   await stop();
