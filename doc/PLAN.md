@@ -78,7 +78,7 @@ pnpm e2e                                  # PASS, prints the hop timeline
 open http://localhost:8080                # manual: type name → timeline reaches DONE
 open http://localhost:4566/_floci/ui      # queues + DLQs exist and are empty
 pnpm stress -- smoke                      # thresholds green
-docker compose restart orchestrator && pnpm e2e   # survives a restart
+podman-compose -f ./infra/docker-compose.yml restart orchestrator && pnpm e2e   # survives a restart
 pnpm stack:down
 ```
 
