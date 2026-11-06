@@ -35,6 +35,12 @@ interface CachedResponse {
 }
 
 const PENDING = 'PENDING';
+/**
+ * Shorter than a retrying client's patience: a replica that dies holding a claim
+ * must not lock the key for the whole response TTL. Should a slow request outlive
+ * this, reserve.lua still prevents a second unit.
+ */
+const PENDING_TTL_SECONDS = 5;
 
 /** Registers `POST /api/purchases` and `GET /api/purchases/:userId` (SPEC §6.2, §6.3). */
 export function registerPurchaseRoutes(
@@ -75,7 +81,7 @@ export function registerPurchaseRoutes(
       }
 
       const claimed = await deps.redis
-        .set(idempotencyKey, PENDING, 'EX', ttl, 'NX')
+        .set(idempotencyKey, PENDING, 'EX', Math.min(ttl, PENDING_TTL_SECONDS), 'NX')
         .catch((error: unknown) => {
           deps.logger.error({ err: error }, 'failed to claim idempotency key');
           return undefined;

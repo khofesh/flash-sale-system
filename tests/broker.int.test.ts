@@ -12,7 +12,7 @@ import {
   type SQSClient,
 } from '@aws-sdk/client-sqs';
 import { GenericContainer, type StartedTestContainer } from 'testcontainers';
-import { createSqsClient } from '@fss/infra';
+import { SqsBus, createLogger, createSqsClient } from '@fss/infra';
 
 const flociImage = 'floci/floci:2.4.0';
 
@@ -46,6 +46,69 @@ describe('SQS broker contract (Floci)', () => {
     if (!response.QueueUrl) throw new Error(`No URL for ${queue}`);
     return response.QueueUrl;
   }
+
+  it('leaves messages unreceived while the subscriber cannot handle them', async () => {
+    const queueUrl = await createQueue('order-events');
+    const bus = new SqsBus(client, createLogger('broker-contract', 'silent'));
+    const received: unknown[] = [];
+    let open = false;
+
+    const stop = await bus.subscribe(
+      'order-events',
+      async (message) => {
+        received.push(message.body);
+      },
+      { canReceive: async () => open },
+    );
+
+    try {
+      await bus.publish('order-events', { id: 1 });
+      await sleep(2_500);
+
+      // Still waiting, and never received, so it has used none of its receives.
+      const attributes = await client.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: queueUrl,
+          AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'],
+        }),
+      );
+      expect(attributes.Attributes?.ApproximateNumberOfMessages).toBe('1');
+      expect(attributes.Attributes?.ApproximateNumberOfMessagesNotVisible).toBe('0');
+      expect(received).toHaveLength(0);
+
+      open = true;
+      const deadline = Date.now() + 10_000;
+      while (received.length === 0 && Date.now() < deadline) await sleep(50);
+      expect(received).toEqual([{ id: 1 }]);
+    } finally {
+      await stop();
+    }
+  });
+
+  it('abandons the rest of a batch when a failure turns out to be an outage', async () => {
+    await createQueue('shipping-requests');
+    const bus = new SqsBus(client, createLogger('broker-contract', 'silent'));
+    let attempts = 0;
+    let open = true;
+
+    for (const id of [1, 2, 3]) await bus.publish('shipping-requests', { id });
+    const stop = await bus.subscribe(
+      'shipping-requests',
+      async () => {
+        attempts += 1;
+        open = false;
+        throw new Error('postgres is down');
+      },
+      { canReceive: async () => open },
+    );
+
+    try {
+      await sleep(2_500);
+      expect(attempts).toBe(1);
+    } finally {
+      await stop();
+    }
+  });
 
   async function createWithDlq(visibilityTimeout: string, maxReceiveCount: string) {
     const dlq = await createQueue(name('contract-dlq'));

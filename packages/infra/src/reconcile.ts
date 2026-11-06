@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Pool } from 'pg';
 import type { Redis } from './redis.js';
+import { RESERVATION_CONSUMER } from './orderRepo.js';
 import { getSaleSnapshot, saleRedisKeys } from './saleRepo.js';
 
 export interface ReconcileReport {
@@ -56,10 +57,10 @@ export async function reconcileSale(
     if (attempt > 0) await sleep(READ_RETRY_MS);
 
     const state = await readRedisState(redis, saleId);
-    const orders = await readOrders(pool, saleId, state.holders);
+    const orders = await readOrders(pool, saleId, state);
     const settled = await redisUnchanged(redis, saleId, state);
 
-    const unpersisted = countUnpersisted(state, orders.known);
+    const unpersisted = countUnpersisted(state, orders.settled);
     const stock = Number(state.stock);
     const held = orders.live + orders.pendingReleases + unpersisted;
     const drift = stock + held - snapshot.totalStock;
@@ -113,7 +114,17 @@ async function redisUnchanged(redis: Redis, saleId: string, before: RedisState):
   return stock === before.stock && length === before.entries.length;
 }
 
-async function readOrders(pool: Pool, saleId: string, holders: Record<string, string>) {
+async function readOrders(pool: Pool, saleId: string, { holders, entries }: RedisState) {
+  // Before the orders: persisting writes both in one transaction, so an entry
+  // persisted between the two reads is still found through its order row.
+  const entryIds = entries
+    .map(([, fields]) => fieldValue(fields, 'reservationId'))
+    .filter((id): id is string => id !== undefined);
+  const processed = await pool.query<{ message_id: string }>(
+    `SELECT message_id FROM processed_messages WHERE consumer = $1 AND message_id = ANY($2)`,
+    [RESERVATION_CONSUMER, entryIds],
+  );
+
   const result = await pool.query<{ id: string; user_id: string; live: boolean }>(
     `SELECT id, user_id, status NOT IN ('CANCELLED', 'REFUNDED') AS live
        FROM orders
@@ -121,12 +132,12 @@ async function readOrders(pool: Pool, saleId: string, holders: Record<string, st
     [saleId],
   );
 
-  const known = new Set<string>();
+  const settled = new Set(processed.rows.map((row) => row.message_id));
   const liveUsers = new Set<string>();
   let live = 0;
   let pendingReleases = 0;
   for (const row of result.rows) {
-    known.add(row.id);
+    settled.add(row.id);
     if (row.live) {
       live += 1;
       liveUsers.add(row.user_id);
@@ -134,19 +145,20 @@ async function readOrders(pool: Pool, saleId: string, holders: Record<string, st
       pendingReleases += 1;
     }
   }
-  return { known, live, liveUsers: liveUsers.size, pendingReleases };
+  return { settled, live, liveUsers: liveUsers.size, pendingReleases };
 }
 
 /**
- * A stream entry with no order row counts only while it holds a unit. A conflict
- * reservation stays in the stream forever, but its unit has gone back to stock.
+ * Counts entries the orchestrator has yet to handle that hold a unit. An entry
+ * already handled (an order row, or a conflict marked processed) is excluded even
+ * if it is the holder: nothing will ever release it, so that shows up as drift.
  */
-function countUnpersisted(state: RedisState, known: Set<string>): number {
+function countUnpersisted(state: RedisState, settled: Set<string>): number {
   let unpersisted = 0;
   for (const [, fields] of state.entries) {
     const reservationId = fieldValue(fields, 'reservationId');
     const userId = fieldValue(fields, 'userId');
-    if (!reservationId || !userId || known.has(reservationId)) continue;
+    if (!reservationId || !userId || settled.has(reservationId)) continue;
     if (state.holders[userId] === reservationId) unpersisted += 1;
   }
   return unpersisted;

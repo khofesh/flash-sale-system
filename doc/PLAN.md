@@ -263,14 +263,18 @@ The stale-event, sweeper-race and failed-conflict-release cases need precise tim
 
 ```bash
 pnpm build && pnpm lint && pnpm test
-pnpm test:int   # tests/resilience.int.test.ts: crashed-consumer reclaim, Redis-down 503s,
-                # Postgres fallback, rebuild from Postgres + stream
+pnpm test:int   # tests/resilience.int.test.ts: crashed-consumer reclaim, Redis outage and stall,
+                # Postgres outage and stall, rebuild edge cases, restart detection
+                # tests/broker.int.test.ts: order events wait in SQS during an outage
 
 pnpm stack:down && pnpm stack:up
 pnpm chaos      # spike while one API replica and the orchestrator are killed and restarted
-                # k6 may exit 99 (exact counts cannot hold under chaos); verify PASS is the criterion
+                # k6 may exit 99 (exact counts cannot hold under chaos); verify PASS is the criterion.
+                # Fails if k6 was not running at the kill, no orders were created,
+                # or any order did not reach a final status.
 
-# Redis rebuild (stop traffic or run it while the stack is idle)
+# Redis rebuild. Safe under traffic: the sale answers 503 until it finishes.
+# A Redis restart triggers this automatically; FLUSHALL needs it by hand.
 docker compose -f infra/docker-compose.yml exec -T redis redis-cli FLUSHALL
 pnpm rebuild-redis
 curl -s localhost:8080/admin/reconcile -H 'x-admin-token: dev-admin-token'   # ok: true

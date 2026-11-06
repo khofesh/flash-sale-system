@@ -14,7 +14,7 @@ const service = config.SERVICE_NAME === 'unknown' ? 'orchestrator' : config.SERV
 const logger = createLogger(service, config.LOG_LEVEL);
 
 const redis = createRedis(config.REDIS_URL);
-const pool = createPgPool(config.DATABASE_URL);
+const pool = createPgPool(config.DATABASE_URL, logger);
 const bus = new SqsBus(
   createSqsClient({
     endpoint: config.SQS_ENDPOINT,

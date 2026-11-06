@@ -60,7 +60,7 @@ export class SqsBus implements MessageBus {
     const controller = new AbortController();
     const concurrency = Math.max(1, options?.concurrency ?? 1);
     const loops = Array.from({ length: concurrency }, () =>
-      this.consume(queue, handler, controller.signal),
+      this.consume(queue, handler, controller.signal, options?.canReceive),
     );
 
     return async () => {
@@ -91,10 +91,16 @@ export class SqsBus implements MessageBus {
     queue: QueueName,
     handler: MessageHandler,
     signal: AbortSignal,
+    canReceive?: () => Promise<boolean>,
   ): Promise<void> {
     let queueUrl: string | undefined;
 
     while (!signal.aborted) {
+      if (canReceive && !(await canReceive().catch(() => false))) {
+        await sleep(1_000);
+        continue;
+      }
+
       let messages;
       try {
         queueUrl ??= await this.queueUrl(queue);
@@ -150,6 +156,9 @@ export class SqsBus implements MessageBus {
             { err: error, queue, messageId: message.MessageId },
             'message handling failed; leaving it for redelivery',
           );
+          // An outage: the rest of the batch would only fail slowly too, keeping
+          // this loop from reaching the check above for minutes.
+          if (canReceive && !(await canReceive().catch(() => false))) break;
         }
       }
     }
