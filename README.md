@@ -1,6 +1,7 @@
 # Flash Sale System
 
-Spec: [`doc/SPEC.md`](doc/SPEC.md) · Plan: [`doc/PLAN.md`](doc/PLAN.md)
+- Spec: [`doc/SPEC.md`](doc/SPEC.md)
+- Plan: [`doc/PLAN.md`](doc/PLAN.md)
 
 ## Prerequisites
 

@@ -18,7 +18,10 @@ import {
  * `/admin/reconcile`. Waits for reservations and compensation to drain first,
  * since k6 finishes before the workers do.
  */
-export async function verifyStack({ requireOrders = false } = {}): Promise<void> {
+export async function verifyStack({
+  requireOrders = false,
+  timeoutMs,
+}: { requireOrders?: boolean; timeoutMs?: number } = {}): Promise<string> {
   const config = loadConfig();
   const redis = createRedis(config.REDIS_URL);
   const pool = createPgPool(config.DATABASE_URL);
@@ -31,8 +34,9 @@ export async function verifyStack({ requireOrders = false } = {}): Promise<void>
 
   try {
     const totalStock = await readTotalStock(pool, config.SALE_ID);
-    // Chaos waits for every saga: a reclaim alone takes XAUTOCLAIM's 30 s idle time.
-    const deadline = Date.now() + (requireOrders ? 300_000 : 45_000);
+    // Chaos and soak wait for every saga: a reclaim alone takes XAUTOCLAIM's
+    // 30 s idle time, and a soak leaves tens of thousands of orders behind.
+    const deadline = Date.now() + (timeoutMs ?? (requireOrders ? 300_000 : 45_000));
     let report = await readReport(redis, pool, config.SALE_ID);
     let orders = await readOrderCounts(pool, config.SALE_ID);
 
@@ -45,11 +49,12 @@ export async function verifyStack({ requireOrders = false } = {}): Promise<void>
       orders = await readOrderCounts(pool, config.SALE_ID);
     }
 
-    console.log(
-      `\nverify ${config.SALE_ID}: total=${totalStock} stock=${report.stock} ` +
+    const lines = [
+      `verify ${config.SALE_ID}: total=${totalStock} stock=${report.stock} ` +
         `live=${report.liveOrders} buyers=${report.buyers} unpersisted=${report.unpersisted} ` +
         `pendingReleases=${report.pendingReleases}`,
-    );
+    ];
+    console.log(`\n${lines[0]}`);
 
     if (requireOrders) {
       // Otherwise a run where no request got through would pass the invariant.
@@ -84,7 +89,9 @@ export async function verifyStack({ requireOrders = false } = {}): Promise<void>
     const deadLetters = await countDeadLetters(sqs);
     assert(deadLetters === 0, `${deadLetters} messages are sitting in the DLQs`);
 
-    console.log('PASS — no oversell, one live order per user, invariant holds, DLQs empty');
+    lines.push('PASS — no oversell, one live order per user, invariant holds, DLQs empty');
+    console.log(lines[1]);
+    return lines.join('\n');
   } finally {
     await redis.quit();
     await pool.end();

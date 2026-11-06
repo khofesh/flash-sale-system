@@ -10,6 +10,7 @@ import {
   type OrderStatus,
   type PurchaseCode,
   type PurchaseResponse,
+  type ReserveOutcome,
   type ReserveResult,
 } from '@fss/core';
 import {
@@ -19,6 +20,7 @@ import {
   type Redis,
   type ReservationStore,
 } from '@fss/infra';
+import type { AppMetrics } from './metrics.js';
 
 export interface PurchaseRouteDeps {
   redis: Redis;
@@ -27,6 +29,17 @@ export interface PurchaseRouteDeps {
   saleId: string;
   reservations: ReservationStore;
   idempotencyTtlSeconds?: number;
+  metrics?: AppMetrics;
+  /**
+   * How long a replica trusts its in-memory sold-out flag before checking Redis
+   * again. Zero disables the short circuit (used by tests that reset a sale).
+   */
+  soldOutRecheckMs?: number;
+}
+
+export interface PurchaseRoutes {
+  /** Forgets the sold-out flag, e.g. after an admin reset restores stock. */
+  clearSoldOut(): void;
 }
 
 interface CachedResponse {
@@ -46,8 +59,19 @@ const PENDING_TTL_SECONDS = 5;
 export function registerPurchaseRoutes(
   app: FastifyInstance<RawServerDefault, IncomingMessage, ServerResponse, Logger>,
   deps: PurchaseRouteDeps,
-): void {
+): PurchaseRoutes {
   const ttl = deps.idempotencyTtlSeconds ?? 600;
+  const recheckMs = deps.soldOutRecheckMs ?? 1_000;
+  // Every replica learns about sell-out from the script, then answers 410 here
+  // until the next recheck. A release or refund can restore stock in between,
+  // so the flag is only trusted for a second (SPEC §9.2).
+  let soldOutAt: number | null = null;
+  const isSoldOut = () =>
+    recheckMs > 0 && soldOutAt !== null && performance.now() - soldOutAt < recheckMs;
+
+  const markSoldOut = () => {
+    soldOutAt = performance.now();
+  };
 
   app.post<{ Body: { userId?: unknown } }>('/api/purchases', async (request, reply) => {
     const rawUserId = request.body?.userId;
@@ -79,7 +103,16 @@ export function registerPurchaseRoutes(
       if (cached) {
         return reply.code(cached.status).send(cached.body);
       }
+    }
 
+    if (isSoldOut()) {
+      // The script already said SOLD_OUT recently; every replica sheds the herd
+      // without a Redis round trip (SPEC §9.2). No idempotency key is claimed:
+      // the next request after the recheck gets the real answer.
+      return reply.code(410).send({ code: 'SOLD_OUT' });
+    }
+
+    if (idempotencyKey) {
       const claimed = await deps.redis
         .set(idempotencyKey, PENDING, 'EX', Math.min(ttl, PENDING_TTL_SECONDS), 'NX')
         .catch((error: unknown) => {
@@ -102,7 +135,9 @@ export function registerPurchaseRoutes(
       }
     }
 
-    const { response, cacheable } = await executeReserve(deps, userId);
+    const { response, cacheable, outcome } = await executeReserve(deps, userId);
+    deps.metrics?.reserveOutcomes.inc({ outcome });
+    if (outcome === 'SOLD_OUT') markSoldOut();
 
     if (idempotencyKey) {
       if (cacheable) {
@@ -177,19 +212,29 @@ export function registerPurchaseRoutes(
 
     return reply.code(404).send({ userId, secured: false });
   });
+
+  return {
+    clearSoldOut: () => {
+      soldOutAt = null;
+    },
+  };
 }
 
 async function executeReserve(
   deps: PurchaseRouteDeps,
   userId: string,
-): Promise<{ response: PurchaseResponse; cacheable: boolean }> {
+): Promise<{ response: PurchaseResponse; cacheable: boolean; outcome: ReserveOutcome }> {
   let result: ReserveResult;
   try {
     result = await deps.reservations.reserve(deps.saleId, userId, randomUUID());
   } catch (error) {
     // Fail closed: without Redis there is no safe way to decide a purchase.
     deps.logger.error({ err: error }, 'reserve script failed');
-    return { response: purchaseResponse({ status: 'UNAVAILABLE' }), cacheable: false };
+    return {
+      response: purchaseResponse({ status: 'UNAVAILABLE' }),
+      cacheable: false,
+      outcome: 'UNAVAILABLE',
+    };
   }
 
   let orderId: string | undefined;
@@ -203,7 +248,7 @@ async function executeReserve(
   }
 
   const response = purchaseResponse(result, orderId);
-  return { response, cacheable: response.statusCode !== 503 };
+  return { response, cacheable: response.statusCode !== 503, outcome: result.status };
 }
 
 function idempotencyCacheKey(

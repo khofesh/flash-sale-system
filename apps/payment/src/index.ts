@@ -22,6 +22,7 @@ const stop = await startPayment({
   latencyMs: config.PAYMENT_LATENCY_MS,
   failureRate: config.PAYMENT_FAILURE_RATE,
   refundLatencyMs: Math.min(config.PAYMENT_LATENCY_MS, 200),
+  concurrency: config.PAYMENT_CONCURRENCY,
 });
 
 onShutdown(logger, async () => {

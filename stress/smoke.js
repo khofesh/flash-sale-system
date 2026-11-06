@@ -4,6 +4,7 @@ import { check, sleep } from 'k6';
 const baseUrl = __ENV.BASE_URL || 'http://host.docker.internal:8080';
 
 export const options = {
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
   vus: 50,
   duration: '20s',
   thresholds: {

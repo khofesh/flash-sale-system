@@ -8,11 +8,13 @@ import type { StartedTestContainer } from 'testcontainers';
 import {
   InMemoryBus,
   RESERVATION_CONSUMER,
+  RebuildInProgressError,
   RedisReservationStore,
   SaleStockMissingError,
   createLogger,
   createPgPool,
   createRedis,
+  fenceRestartedSale,
   persistReservation,
   readRedisRunId,
   rebuildRedis,
@@ -507,6 +509,29 @@ describe('resilience', () => {
     expect(await redis.get(keys.stock)).toBe(String(totalStock));
   });
 
+  it('never closes a sale that another replica has already rebuilt', async () => {
+    const keys = saleRedisKeys(saleId);
+    const runId = await readRedisRunId(redis);
+    await redis.set(keys.redisRunId, 'previous-run');
+
+    // Still the old run: this replica closes the sale.
+    expect(await fenceRestartedSale(redis, saleId, runId)).toBe(true);
+    expect(await redis.exists(keys.stock)).toBe(0);
+
+    await rebuildRedis(pool, redis, saleId);
+
+    // A second replica that read the old run id just before that rebuild finished.
+    // Deleting stock now would strand the sale: run_id matches, so no check reruns.
+    expect(await fenceRestartedSale(redis, saleId, runId)).toBe(false);
+    expect(await redis.get(keys.stock)).toBe(String(totalStock));
+  });
+
+  it('reports a rebuild that lost the lock with a dedicated error', async () => {
+    const keys = saleRedisKeys(saleId);
+    await redis.set(keys.rebuildLock, '1', 'EX', 30);
+    await expect(rebuildRedis(pool, redis, saleId)).rejects.toBeInstanceOf(RebuildInProgressError);
+  });
+
   it('survives Postgres dropping an idle connection', async () => {
     const victim = createPgPool(postgresContainer.getConnectionUri());
     try {
@@ -662,7 +687,7 @@ describe('resilience', () => {
       proxy = new TcpProxy(redisContainer.getHost(), redisContainer.getMappedPort(6379));
       const port = await proxy.start();
 
-      proxied = createRedis(`redis://127.0.0.1:${port}`, { failFast: true });
+      proxied = createRedis(`redis://127.0.0.1:${port}`, { failFast: true, autoPipelining: true });
       proxied.on('error', () => undefined);
       await redisReady(proxied);
 

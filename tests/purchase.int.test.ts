@@ -75,6 +75,9 @@ describe('purchases', () => {
       productId: 'flash-tshirt',
       adminToken: 'test-admin-token',
       saleCacheMs: 0,
+      // The shared app resets its sale directly (not through /admin/sale), so a
+      // cached sold-out flag would leak into the next test.
+      soldOutRecheckMs: 0,
       reservations,
     });
     await app.ready();
@@ -369,5 +372,41 @@ describe('purchases', () => {
     await redis.hdel(holders, 'bob');
     const released = await getPurchase('bob');
     expect(released.json()).toMatchObject({ status: 'CANCELLED', secured: false, orderId });
+  });
+
+  it('answers 410 from the sold-out flag for one second, then rechecks Redis', async () => {
+    // A dedicated app: the shared one disables the short circuit so a direct
+    // reset in another test cannot leave a stale flag behind.
+    const shortApp = buildApp({
+      redis,
+      pool,
+      logger,
+      saleId,
+      productId: 'flash-tshirt',
+      saleCacheMs: 0,
+      soldOutRecheckMs: 1_000,
+      reservations: new RedisReservationStore(redis, logger),
+    });
+    await shortApp.ready();
+
+    const buy = (userId: string) =>
+      shortApp.inject({ method: 'POST', url: '/api/purchases', payload: { userId } });
+
+    try {
+      await useSale({ totalStock: 1 });
+      expect((await buy('flash-1')).statusCode).toBe(202);
+      // The script reports SOLD_OUT: this replica now trusts that for a second.
+      expect((await buy('flash-2')).statusCode).toBe(410);
+
+      // A release or refund restored stock, but the flag is still fresh: no
+      // Redis round trip, still 410.
+      await redis.set(saleRedisKeys(saleId).stock, '3');
+      expect((await buy('flash-3')).statusCode).toBe(410);
+
+      await sleep(1_100);
+      expect((await buy('flash-3')).statusCode).toBe(202);
+    } finally {
+      await shortApp.close();
+    }
   });
 });

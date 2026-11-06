@@ -14,6 +14,7 @@ import {
   type ReservationStore,
   type SaleSnapshot,
 } from '@fss/infra';
+import type { AppMetrics } from './metrics.js';
 import { registerPurchaseRoutes } from './purchases.js';
 
 interface BuildAppDeps {
@@ -27,6 +28,12 @@ interface BuildAppDeps {
   saleCacheMs?: number;
   /** Used by the purchase routes; defaults to the Redis-backed store. */
   reservations?: ReservationStore;
+  /** When set, request metrics and the `/metrics` scrape route are registered. */
+  metrics?: AppMetrics;
+  /** Refreshes the operational gauges (stream lag, DLQ depth) before a scrape. */
+  refreshMetrics?: () => Promise<void>;
+  /** How long a replica answers 410 from its sold-out flag without touching Redis. */
+  soldOutRecheckMs?: number;
 }
 
 interface SaleView {
@@ -56,8 +63,36 @@ export function buildApp({
   adminToken,
   saleCacheMs = 250,
   reservations = new RedisReservationStore(redis),
+  metrics,
+  refreshMetrics,
+  soldOutRecheckMs,
 }: BuildAppDeps) {
   const app = Fastify({ loggerInstance: logger });
+
+  if (metrics) {
+    app.addHook('onResponse', async (request, reply) => {
+      const labels = {
+        method: request.method,
+        // The pattern (`/api/purchases/:userId`) keeps the label set bounded.
+        route: request.routeOptions.url ?? 'unmatched',
+        status: String(reply.statusCode),
+      };
+      metrics.httpRequests.inc(labels);
+      metrics.httpRequestDuration.observe(labels, reply.elapsedTime / 1_000);
+    });
+
+    app.get('/metrics', async (_request, reply) => {
+      if (refreshMetrics) {
+        await refreshMetrics().catch((error: unknown) => {
+          logger.warn({ err: error }, 'failed to refresh operational metrics');
+        });
+      }
+      return reply
+        .header('Cache-Control', 'no-store')
+        .type(metrics.registry.contentType)
+        .send(await metrics.registry.metrics());
+    });
+  }
 
   // `at` is a local monotonic timestamp, used only to age the cached Redis time.
   interface CachedSale {
@@ -89,10 +124,22 @@ export function buildApp({
     return inflight;
   };
 
+  const purchases = registerPurchaseRoutes(app, {
+    redis,
+    pool,
+    logger,
+    saleId,
+    reservations,
+    metrics,
+    soldOutRecheckMs,
+  });
+
   const invalidateSale = () => {
     saleGeneration += 1;
     saleCache = null;
     saleInflight = null;
+    // A reset can restore stock on this replica, so its sold-out flag is stale.
+    purchases.clearSoldOut();
   };
 
   app.get('/healthz', async () => ({ status: 'ok' }));
@@ -158,15 +205,7 @@ export function buildApp({
       serverTime: new Date(now).toISOString(),
     };
 
-    return view;
-  });
-
-  registerPurchaseRoutes(app, {
-    redis,
-    pool,
-    logger,
-    saleId,
-    reservations,
+    return reply.header('Cache-Control', 'max-age=1').send(view);
   });
 
   if (adminToken) {

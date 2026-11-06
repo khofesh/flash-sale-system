@@ -21,6 +21,7 @@ const stop = await startShipping({
   logger,
   latencyMs: config.SHIPPING_LATENCY_MS,
   failureRate: config.SHIPPING_FAILURE_RATE,
+  concurrency: config.SHIPPING_CONCURRENCY,
 });
 
 onShutdown(logger, async () => {

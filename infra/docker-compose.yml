@@ -13,8 +13,14 @@ x-node-env: &node-env
   # Deterministic local stack: set these to 1 to exercise compensation.
   PAYMENT_FAILURE_RATE: ${PAYMENT_FAILURE_RATE:-0}
   PAYMENT_TIMEOUT_MS: ${PAYMENT_TIMEOUT_MS:-60000}
+  PAYMENT_CONCURRENCY: ${PAYMENT_CONCURRENCY:-50}
   SHIPPING_LATENCY_MS: ${SHIPPING_LATENCY_MS:-100}
   SHIPPING_FAILURE_RATE: ${SHIPPING_FAILURE_RATE:-0}
+  SHIPPING_CONCURRENCY: ${SHIPPING_CONCURRENCY:-50}
+  # Per-process Postgres connections. Four API replicas x 20 stays under 200.
+  PG_POOL_MAX: ${PG_POOL_MAX:-20}
+  # A replica answers 410 from memory for this long after the script says SOLD_OUT.
+  SOLD_OUT_RECHECK_MS: ${SOLD_OUT_RECHECK_MS:-1000}
   SALE_ID: ${SALE_ID:-launch-2026}
   SALE_PRODUCT_ID: ${SALE_PRODUCT_ID:-flash-tshirt}
   SALE_STARTS_AT: ${SALE_STARTS_AT:-}
@@ -44,6 +50,9 @@ services:
 
   postgres:
     image: postgres:16.4-alpine
+    # Four API replicas plus two orchestrators each keep a pool; the default 100
+    # connections is too tight once all of them are busy.
+    command: ['postgres', '-c', 'max_connections=200', '-c', 'shared_buffers=256MB']
     environment:
       POSTGRES_USER: flash
       POSTGRES_PASSWORD: flash
@@ -124,7 +133,7 @@ services:
       migrate:
         condition: service_completed_successfully
     deploy:
-      replicas: 2
+      replicas: 4
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1']
       interval: 5s
@@ -153,6 +162,8 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
+    deploy:
+      replicas: 2
     healthcheck:
       test: ['CMD-SHELL', "pgrep -f 'node apps/orchestrator/dist/inde[x].js' >/dev/null || exit 1"]
       interval: 10s
@@ -175,6 +186,8 @@ services:
         condition: service_healthy
       queue-init:
         condition: service_completed_successfully
+    deploy:
+      replicas: 2
     healthcheck:
       test: ['CMD-SHELL', "pgrep -f 'node apps/payment/dist/inde[x].js' >/dev/null || exit 1"]
       interval: 10s
@@ -231,6 +244,11 @@ services:
     environment:
       NGINX_ENTRYPOINT_LOCAL_RESOLVERS: '1'
       NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+      # Per client IP. A shopper polls about once a second, so this sheds abuse
+      # while leaving room for many shoppers behind one NAT. `pnpm stress` recreates
+      # nginx with a higher limit, because all of k6 arrives from a single address.
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-100}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-200}
     depends_on:
       api:
         condition: service_healthy

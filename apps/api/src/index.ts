@@ -4,20 +4,33 @@ import {
   createLogger,
   createPgPool,
   createRedis,
+  createSqsClient,
   getSaleSnapshot,
+  readDeadLetterDepths,
   redisReady,
   RedisReservationStore,
+  saleRedisKeys,
   seedSale,
 } from '@fss/infra';
 import { buildApp } from './app.js';
+import { createAppMetrics, throttleRefresh } from './metrics.js';
 
 const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'api' : config.SERVICE_NAME;
 const logger = createLogger(service, config.LOG_LEVEL);
 
-const redis = createRedis(config.REDIS_URL, { failFast: true });
+const redis = createRedis(config.REDIS_URL, { failFast: true, autoPipelining: true });
 redis.on('error', (error) => logger.warn({ err: error }, 'redis connection error'));
-const pool = createPgPool(config.DATABASE_URL, logger);
+const pool = createPgPool(config.DATABASE_URL, logger, { max: config.PG_POOL_MAX });
+const sqs = createSqsClient({
+  endpoint: config.SQS_ENDPOINT,
+  region: config.AWS_REGION,
+  accessKeyId: config.AWS_ACCESS_KEY_ID,
+  secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
+  // Only used for scrapes: a dead broker must not hang /metrics.
+  requestTimeoutMs: 1_000,
+});
+const metrics = createAppMetrics();
 
 try {
   await redisReady(redis);
@@ -73,6 +86,43 @@ try {
   logger.error({ err: error }, 'failed to preload redis scripts');
 }
 
+/**
+ * The orchestrator owns the stream and the broker, but a scrape reaches any
+ * replica; reading them here shows the same global state from every replica.
+ */
+async function refreshMetrics(): Promise<void> {
+  const { reservations } = saleRedisKeys(config.SALE_ID);
+  // Reset first: if a read fails the series disappear, instead of a stale "0"
+  // reading as a healthy queue during the outage it should be showing.
+  metrics.streamLag.reset();
+  metrics.streamPending.reset();
+  metrics.dlqDepth.reset();
+
+  try {
+    const groups = (await redis.xinfo('GROUPS', reservations)) as unknown[][];
+    for (const fields of groups) {
+      const field = (name: string) => fields[fields.indexOf(name) + 1];
+      const group = String(field('name') ?? 'unknown');
+      // Redis reports a nil lag when it cannot compute one; unknown is not zero.
+      const lag = field('lag');
+      if (lag !== null && lag !== undefined) metrics.streamLag.set({ group }, Number(lag));
+      metrics.streamPending.set({ group }, Number(field('pending') ?? 0));
+    }
+  } catch (error) {
+    // No stream yet, or Redis is down: the other gauges are still useful.
+    logger.warn({ err: error, saleId: config.SALE_ID }, 'failed to read reservation stream lag');
+  }
+
+  try {
+    const depths = await readDeadLetterDepths(sqs);
+    for (const [queue, depth] of Object.entries(depths)) {
+      metrics.dlqDepth.set({ queue }, depth);
+    }
+  } catch (error) {
+    logger.warn({ err: error }, 'failed to read dead-letter queue depth');
+  }
+}
+
 const app = buildApp({
   redis,
   pool,
@@ -81,12 +131,16 @@ const app = buildApp({
   productId: config.SALE_PRODUCT_ID,
   adminToken: config.ADMIN_TOKEN,
   reservations,
+  metrics,
+  refreshMetrics: throttleRefresh(refreshMetrics, 5_000),
+  soldOutRecheckMs: config.SOLD_OUT_RECHECK_MS,
 });
 
 onShutdown(logger, async () => {
   await app.close();
   await redis.quit().catch(() => undefined);
   await pool.end();
+  sqs.destroy();
 });
 
 try {

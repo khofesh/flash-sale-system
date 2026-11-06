@@ -80,9 +80,9 @@ async function getQueueUrl(client: SQSClient, name: string): Promise<string> {
   return response.QueueUrl;
 }
 
-/** Total visible messages across every dead-letter queue. */
-export async function countDeadLetters(client: SQSClient): Promise<number> {
-  let total = 0;
+/** Visible messages per dead-letter queue, keyed by queue name. */
+export async function readDeadLetterDepths(client: SQSClient): Promise<Record<string, number>> {
+  const depths: Record<string, number> = {};
 
   for (const definition of QUEUE_DEFINITIONS) {
     let queueUrl: string | undefined;
@@ -99,10 +99,18 @@ export async function countDeadLetters(client: SQSClient): Promise<number> {
         AttributeNames: ['ApproximateNumberOfMessages'],
       }),
     );
-    total += Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0);
+    depths[definition.deadLetterQueue] = Number(
+      attributes.Attributes?.ApproximateNumberOfMessages ?? 0,
+    );
   }
 
-  return total;
+  return depths;
+}
+
+/** Total visible messages across every dead-letter queue. */
+export async function countDeadLetters(client: SQSClient): Promise<number> {
+  const depths = await readDeadLetterDepths(client);
+  return Object.values(depths).reduce((total, depth) => total + depth, 0);
 }
 
 async function queueArn(client: SQSClient, queueUrl: string): Promise<string> {
