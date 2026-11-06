@@ -80,6 +80,31 @@ async function getQueueUrl(client: SQSClient, name: string): Promise<string> {
   return response.QueueUrl;
 }
 
+/** Total visible messages across every dead-letter queue. */
+export async function countDeadLetters(client: SQSClient): Promise<number> {
+  let total = 0;
+
+  for (const definition of QUEUE_DEFINITIONS) {
+    let queueUrl: string | undefined;
+    try {
+      queueUrl = await getQueueUrl(client, definition.deadLetterQueue);
+    } catch (error) {
+      if (isMissingQueue(error)) continue;
+      throw error;
+    }
+
+    const attributes = await client.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: ['ApproximateNumberOfMessages'],
+      }),
+    );
+    total += Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0);
+  }
+
+  return total;
+}
+
 async function queueArn(client: SQSClient, queueUrl: string): Promise<string> {
   const response = await client.send(
     new GetQueueAttributesCommand({ QueueUrl: queueUrl, AttributeNames: ['QueueArn'] }),

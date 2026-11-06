@@ -1,19 +1,27 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
-interface Hop {
-  service: string;
-  hostname: string;
-  at: string;
-}
-
-interface HelloView {
-  id: string;
-  name?: string;
-  status: 'QUEUED' | 'PAID' | 'DONE';
-  hops: Hop[];
-}
-
 type SaleStatus = 'UPCOMING' | 'ACTIVE' | 'SOLD_OUT' | 'ENDED';
+
+type OrderStatus =
+  | 'RESERVED'
+  | 'PAYMENT_PENDING'
+  | 'PAID'
+  | 'SHIPPING_PENDING'
+  | 'COMPLETED'
+  | 'SHIPPING_FAILED'
+  | 'CANCELLED'
+  | 'REFUNDED';
+
+type PurchaseCode =
+  | 'RESERVED'
+  | 'ALREADY_PURCHASED'
+  | 'SOLD_OUT'
+  | 'NOT_STARTED'
+  | 'ENDED'
+  | 'VALIDATION_ERROR'
+  | 'RATE_LIMITED'
+  | 'UNAVAILABLE'
+  | 'SALE_NOT_FOUND';
 
 interface SaleView {
   saleId: string;
@@ -25,12 +33,20 @@ interface SaleView {
   serverTime: string;
 }
 
-const serviceColors: Record<string, string> = {
-  api: '#2563eb',
-  orchestrator: '#7c3aed',
-  payment: '#059669',
-  shipping: '#d97706',
-};
+interface PurchaseView {
+  userId: string;
+  secured: boolean;
+  orderId?: string;
+  status?: OrderStatus;
+  updatedAt?: string;
+  failureReason?: string;
+  final?: boolean;
+}
+
+interface Feedback {
+  tone: 'success' | 'info' | 'error' | 'warning';
+  text: string;
+}
 
 const saleLabels: Record<SaleStatus, string> = {
   UPCOMING: 'Upcoming',
@@ -38,6 +54,24 @@ const saleLabels: Record<SaleStatus, string> = {
   SOLD_OUT: 'Sold out',
   ENDED: 'Ended',
 };
+
+const orderLabels: Record<OrderStatus, string> = {
+  RESERVED: 'Reserved',
+  PAYMENT_PENDING: 'Processing payment',
+  PAID: 'Paid',
+  SHIPPING_PENDING: 'Preparing shipment',
+  COMPLETED: 'Shipped',
+  SHIPPING_FAILED: 'Shipping failed',
+  CANCELLED: 'Cancelled',
+  REFUNDED: 'Refunded',
+};
+
+const finalStatuses = new Set<OrderStatus>([
+  'COMPLETED',
+  'SHIPPING_FAILED',
+  'CANCELLED',
+  'REFUNDED',
+]);
 
 function formatCountdown(milliseconds: number): string {
   const total = Math.max(0, Math.ceil(milliseconds / 1000));
@@ -52,42 +86,129 @@ function formatCountdown(milliseconds: number): string {
   return `${s}s`;
 }
 
+function feedbackFor(code: PurchaseCode): Feedback {
+  switch (code) {
+    case 'RESERVED':
+      return { tone: 'success', text: '🎉 Reserved! You secured a unit.' };
+    case 'ALREADY_PURCHASED':
+      return { tone: 'info', text: '✅ You already purchased this item.' };
+    case 'SOLD_OUT':
+      return { tone: 'error', text: '❌ Sold out.' };
+    case 'NOT_STARTED':
+      return { tone: 'warning', text: '⏰ The sale has not started yet.' };
+    case 'ENDED':
+      return { tone: 'error', text: '🔒 The sale has ended.' };
+    case 'VALIDATION_ERROR':
+      return { tone: 'warning', text: '⚠️ Enter a valid user id.' };
+    case 'RATE_LIMITED':
+      return { tone: 'warning', text: '⚠️ Too many requests, please try again.' };
+    case 'SALE_NOT_FOUND':
+      return { tone: 'error', text: '⚠️ No sale is configured.' };
+    case 'UNAVAILABLE':
+      return { tone: 'warning', text: '⚠️ Service unavailable. Try again.' };
+  }
+}
+
+const purchaseCodes = new Set<string>([
+  'RESERVED',
+  'ALREADY_PURCHASED',
+  'SOLD_OUT',
+  'NOT_STARTED',
+  'ENDED',
+  'VALIDATION_ERROR',
+  'RATE_LIMITED',
+  'UNAVAILABLE',
+  'SALE_NOT_FOUND',
+] satisfies PurchaseCode[]);
+
+/**
+ * Parses a purchase response. Errors produced in front of the API (nginx 429 or
+ * 502 pages) are not JSON, so they are mapped from the status code instead.
+ */
+async function readPurchaseBody(
+  response: Response,
+): Promise<{ code: PurchaseCode; orderId?: string }> {
+  try {
+    const data = (await response.json()) as { code?: PurchaseCode; orderId?: string };
+    if (data.code && purchaseCodes.has(data.code)) {
+      return data as { code: PurchaseCode; orderId?: string };
+    }
+  } catch {
+    // Fall through to the status code.
+  }
+  if (response.status === 429) return { code: 'RATE_LIMITED' };
+  if (response.status >= 400 && response.status < 500) return { code: 'VALIDATION_ERROR' };
+  return { code: 'UNAVAILABLE' };
+}
+
+function stepIndex(status: OrderStatus | undefined): number {
+  switch (status) {
+    case 'RESERVED':
+    case 'PAYMENT_PENDING':
+      return 0;
+    case 'PAID':
+    case 'SHIPPING_PENDING':
+      return 1;
+    case 'COMPLETED':
+      // Past the last step, so every step renders as done.
+      return 3;
+    default:
+      return -1;
+  }
+}
+
 export function App() {
-  const [name, setName] = useState('');
-  const [id, setId] = useState<string | null>(null);
-  const [view, setView] = useState<HelloView | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [userId, setUserId] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [purchase, setPurchase] = useState<PurchaseView | null>(null);
+  const [pollUserId, setPollUserId] = useState<string | null>(null);
 
   const [sale, setSale] = useState<SaleView | null>(null);
   const [saleError, setSaleError] = useState<string | null>(null);
   const [clockOffset, setClockOffset] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
-  async function sayHello(event: FormEvent) {
+  async function buy(event: FormEvent) {
     event.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed || submitting) return;
+    const id = userId.trim();
+    if (!id || submitting || sale?.status !== 'ACTIVE') return;
 
     setSubmitting(true);
-    setError(null);
-    setView(null);
-    setId(null);
+    setFeedback(null);
+    setPurchase(null);
+    setPollUserId(null);
 
     try {
-      const response = await fetch('/api/hello', {
+      const response = await fetch('/api/purchases', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: trimmed }),
+        headers: {
+          'content-type': 'application/json',
+          // A per-click key makes a network retry return the original response
+          // instead of reserving a second unit (SPEC §8).
+          'idempotency-key': crypto.randomUUID(),
+        },
+        body: JSON.stringify({ userId: id }),
       });
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
+      const data = await readPurchaseBody(response);
+
+      setFeedback(feedbackFor(data.code));
+
+      if (data.code === 'RESERVED' || data.code === 'ALREADY_PURCHASED') {
+        const normalized = id.toLowerCase();
+        setPurchase({
+          userId: normalized,
+          secured: true,
+          orderId: data.orderId,
+          status: 'RESERVED',
+        });
+        setPollUserId(normalized);
       }
-      const data = (await response.json()) as { id: string };
-      setId(data.id);
-      setView({ id: data.id, status: 'QUEUED', hops: [] });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Request failed');
+      setFeedback({
+        tone: 'warning',
+        text: caught instanceof Error ? `⚠️ ${caught.message}` : '⚠️ Try again.',
+      });
     } finally {
       setSubmitting(false);
     }
@@ -116,9 +237,7 @@ export function App() {
           if (cancelled) return;
           setSale(data);
           // Correct the local clock against the server's, so the countdown does
-          // not depend on the browser clock (SPEC §8). Assume serverTime was
-          // stamped mid-flight, and keep the sample with the smallest round trip
-          // so latency jitter does not make the countdown jump.
+          // not depend on the browser clock (SPEC §8).
           const rtt = receivedAt - sentAt;
           if (rtt <= bestRtt) {
             bestRtt = rtt;
@@ -147,35 +266,37 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!id) return;
+    if (!pollUserId) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const poll = async () => {
       try {
-        const response = await fetch(`/api/hello/${id}`);
+        const response = await fetch(`/api/purchases/${encodeURIComponent(pollUserId)}`);
+        if (cancelled) return;
+
         if (response.status === 404) {
-          // Not persisted by the orchestrator yet; keep the QUEUED placeholder.
-          if (cancelled) return;
-          setError(null);
-          timer = setTimeout(poll, 500);
+          setPurchase((current) =>
+            current ? { ...current, secured: false, status: 'CANCELLED' } : current,
+          );
           return;
         }
         if (!response.ok) {
           throw new Error(`API returned ${response.status}`);
         }
-        const data = (await response.json()) as HelloView;
+
+        const data = (await response.json()) as PurchaseView;
         if (cancelled) return;
-        setError(null);
-        setView(data);
-        if (data.status !== 'DONE') {
-          timer = setTimeout(poll, 500);
+        setPurchase(data);
+
+        if (!data.status || !finalStatuses.has(data.status)) {
+          timer = setTimeout(poll, 2_000);
         }
-      } catch (caught) {
-        if (cancelled) return;
-        setError(caught instanceof Error ? caught.message : 'Polling failed');
-        timer = setTimeout(poll, 1_000);
+      } catch {
+        if (!cancelled) {
+          timer = setTimeout(poll, 2_000);
+        }
       }
     };
 
@@ -185,7 +306,7 @@ export function App() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [id]);
+  }, [pollUserId]);
 
   const serverNow = now + clockOffset;
   const countdown = sale
@@ -196,14 +317,18 @@ export function App() {
         : null
     : null;
 
+  const status = purchase?.status;
+  const progress = stepIndex(status);
+  const cancelled = status === 'CANCELLED' || status === 'REFUNDED' || status === 'SHIPPING_FAILED';
+
   return (
     <main className="page">
       <header>
-        <p className="eyebrow">Phase 1 · sale configuration</p>
-        <h1>Flash sale status</h1>
+        <p className="eyebrow">Phase 2 · atomic reservation</p>
+        <h1>Flash sale</h1>
         <p className="lede">
-          The banner follows the server clock and the stock kept in Redis. The hello walkthrough
-          underneath still exercises the whole stack.
+          One unit per user, decided atomically in Redis. The sale window and stock below come from
+          the same clock and keys the purchase path uses.
         </p>
       </header>
 
@@ -246,58 +371,67 @@ export function App() {
 
       {saleError && <p className="error">{saleError}</p>}
 
-      <form className="hello-form" onSubmit={sayHello}>
-        <label htmlFor="name">Your name</label>
+      <form className="buy-form" onSubmit={buy}>
+        <label htmlFor="userId">User id (email or username)</label>
         <div className="row">
           <input
-            id="name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Ada Lovelace"
-            maxLength={100}
+            id="userId"
+            value={userId}
+            onChange={(event) => setUserId(event.target.value)}
+            placeholder="alice@example.com"
+            maxLength={254}
             autoComplete="off"
           />
-          <button type="submit" disabled={!name.trim() || submitting}>
-            {submitting ? 'Sending…' : 'Say hello'}
+          <button
+            type="submit"
+            disabled={!userId.trim() || submitting || sale?.status !== 'ACTIVE'}
+          >
+            {submitting ? 'Buying…' : 'Buy Now'}
           </button>
         </div>
+        {sale && sale.status !== 'ACTIVE' && (
+          <p className="muted">Buy Now is enabled while the sale is live.</p>
+        )}
       </form>
 
-      {error && <p className="error">{error}</p>}
+      {feedback && <p className={`feedback ${feedback.tone}`}>{feedback.text}</p>}
 
-      {view && (
-        <section className="timeline-card">
-          <div className="timeline-header">
+      {purchase && (
+        <section className="purchase-card">
+          <div className="purchase-header">
             <div>
-              <p className="eyebrow">Message</p>
-              <code>{view.id}</code>
+              <p className="eyebrow">Your purchase</p>
+              <strong>{purchase.userId}</strong>
             </div>
-            <span className={`badge ${view.status.toLowerCase()}`}>{view.status}</span>
+            <span className={`badge ${status ? status.toLowerCase() : 'queued'}`}>
+              {status ? orderLabels[status] : 'Reserved'}
+            </span>
           </div>
 
-          {view.hops.length === 0 && <p className="muted">Waiting for the orchestrator…</p>}
-
-          <ol className="timeline">
-            {view.hops.map((hop, index) => (
-              <li key={`${hop.service}-${hop.at}-${index}`}>
-                <span
-                  className="dot"
-                  style={{ background: serviceColors[hop.service] ?? '#475569' }}
-                />
-                <div>
-                  <p className="hop-service">{hop.service}</p>
-                  <p className="hop-meta">
-                    {hop.hostname} · {new Date(hop.at).toLocaleTimeString()}
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ol>
-
-          {view.status === 'DONE' && (
-            <p className="done">
-              Hello, {view.name ?? name}! The full round trip took {view.hops.length} hops.
+          {purchase.orderId && (
+            <p className="muted">
+              Order <code>{purchase.orderId}</code>
             </p>
+          )}
+
+          {cancelled ? (
+            <p className="cancelled">
+              {status === 'SHIPPING_FAILED' ? 'Shipping failed' : 'Cancelled'}
+              {purchase.failureReason ? `: ${purchase.failureReason}` : '.'} You can try again while
+              the sale is live.
+            </p>
+          ) : (
+            <ol className="progress">
+              {['Reserved', 'Paid', 'Shipped'].map((label, index) => (
+                <li
+                  key={label}
+                  className={index < progress ? 'done' : index === progress ? 'current' : ''}
+                >
+                  <span>{index + 1}</span>
+                  {label}
+                </li>
+              ))}
+            </ol>
           )}
         </section>
       )}

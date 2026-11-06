@@ -126,16 +126,59 @@ pnpm stack:down
 
 ## Phase 2: Atomic reservation, the core of the brief (SPEC §5.2, §6.2, §6.3)
 
-- [ ] `infra/redis/reserve.lua` and `release.lua`, loaded with `SCRIPT LOAD` and called with `EVALSHA` (reload on `NOSCRIPT`).
-- [ ] `core/userId.ts`: normalise and validate.
-- [ ] `POST /api/purchases`: map script results to HTTP (SPEC §6.2 table). `Idempotency-Key` support (Redis `SET NX EX 600`).
-- [ ] `GET /api/purchases/:userId`: PG first, then a Redis buyers-set fallback (returns `RESERVED`).
-- [ ] Orchestrator: replace the hello consumer with a `sale:{id}:reservations` consumer → insert `orders` row as `RESERVED` (migration `0002_orders.sql` with the partial unique index, `saga_events`, `processed_messages`). Payment is still a stub that marks the order `COMPLETED` directly, so Phase 2 alone satisfies the brief (SPEC §14 milestone 1).
-- [ ] Web: `userId` input, **Buy Now** (disabled unless ACTIVE or while a request is in flight), feedback messages per code, poll the purchase status.
-- [ ] **Concurrency integration tests** (SPEC §12.2): 1,000 parallel reserves for stock 100 → exactly 100 reserved. 500 parallel calls for one user → exactly 1. Release twice → stock +1 only once.
-- [ ] `stress/spike.js` + `stress/verify.ts` (SPEC §12.3 "Spike" and "Same-user abuse").
+- [x] `infra/redis/reserve.lua` and `release.lua`, loaded with `SCRIPT LOAD` and called with `EVALSHA` (reload on `NOSCRIPT`).
+- [x] `core/userId.ts`: normalise and validate.
+- [x] `POST /api/purchases`: map script results to HTTP (SPEC §6.2 table). `Idempotency-Key` support (Redis `SET NX EX 600`).
+- [x] `GET /api/purchases/:userId`: PG first, then a Redis buyers-set fallback (returns `RESERVED`).
+- [x] Orchestrator: replace the hello consumer with a `sale:{id}:reservations` consumer → insert `orders` row as `RESERVED` (migration `0002_orders.sql` with the partial unique index, `saga_events`, `processed_messages`). Payment is still a stub that marks the order `COMPLETED` directly, so Phase 2 alone satisfies the brief (SPEC §14 milestone 1).
+- [x] Web: `userId` input, **Buy Now** (disabled unless ACTIVE or while a request is in flight), feedback messages per code, poll the purchase status.
+- [x] **Concurrency integration tests** (SPEC §12.2): 1,000 parallel reserves for stock 100 → exactly 100 reserved. 500 parallel calls for one user → exactly 1. Release twice → stock +1 only once.
+- [x] `stress/spike.js` + `stress/verify.ts` (SPEC §12.3 "Spike" and "Same-user abuse").
 
 **Verify:** `pnpm test:int` green. `pnpm stress -- spike` → exactly `totalStock` × 202, the rest 410, zero 5xx, and `verify.ts` passes (no oversell, one order per user). Manual: buy twice with the same id in the UI → "already purchased".
+
+**How to test:**
+
+```bash
+pnpm build && pnpm lint && pnpm test       # unit: userId normalisation, reply parsing, HTTP mapping
+pnpm test:int                              # Lua scripts (1,000-way race for stock 100, 500 calls for one user,
+                                           # release twice), purchase API, orchestrator dedupe/conflict
+
+pnpm stack:down && pnpm stack:up           # fresh stack: a sale with orders cannot be reset (409 SALE_HAS_ORDERS)
+pnpm e2e                                   # reserve → idempotent replay → COMPLETED → 409 → stock -1
+
+pnpm stress -- spike                       # 10k buyers, 1,000 units: 1000 × 202, 9000 × 410, 0 × 5xx, verify PASS
+pnpm stress -- same-user                   # 2,000 calls from 50 users: 50 × 202, 1950 × 409, verify PASS
+# stress truncates orders and resets the sale itself, so it is repeatable. verify.ts checks
+# stock + live orders == totalStock, buyers set == live orders, one live order per user, DLQs empty.
+
+T='x-admin-token: dev-admin-token'; J='content-type: application/json'
+sale() { curl -s -X POST localhost:8080/admin/sale -H "$T" -H "$J" \
+  -d "{\"startsAt\":\"$(date -u -d "$1" +%FT%TZ)\",\"endsAt\":\"$(date -u -d "$2" +%FT%TZ)\",\"totalStock\":${3:-100}}"; }
+buy() { curl -s -w ' %{http_code}\n' -X POST localhost:8080/api/purchases -H "$J" \
+  ${2:+-H "idempotency-key: $2"} -d "{\"userId\":\"$1\"}"; }
+
+pnpm stack:down && pnpm stack:up
+sale '+1 hour' '+2 hours' 2; buy alice     # 403 NOT_STARTED
+sale '-1 min' '+10 min' 2                  # 200 (allowed: no orders yet)
+buy ' Alice@X.io ' k1                      # 202 RESERVED, orderId A (id is trimmed + lowercased)
+buy alice@x.io k1                          # 202, same orderId A (Idempotency-Key replay)
+buy alice@x.io                             # 409 ALREADY_PURCHASED, orderId A
+buy bob                                    # 202
+buy carol                                  # 410 SOLD_OUT
+buy 'bad user'                             # 400 VALIDATION_ERROR
+curl -s localhost:8080/api/purchases/alice@x.io   # status COMPLETED (payment stub), final: true
+curl -s localhost:8080/api/purchases/nobody       # 404 {"secured":false}
+sale '-1 min' '+10 min' 2                  # 409 SALE_HAS_ORDERS
+
+docker compose -f infra/docker-compose.yml stop redis
+buy dave                                   # 503 UNAVAILABLE: fails closed
+docker compose -f infra/docker-compose.yml start redis
+
+open http://localhost:8080                 # manual: Buy Now only enabled while ACTIVE; same id twice →
+                                           # "already purchased"; progress Reserved → Paid → Shipped
+pnpm stack:down
+```
 
 ---
 

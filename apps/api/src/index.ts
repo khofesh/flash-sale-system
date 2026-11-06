@@ -1,5 +1,12 @@
 import { loadConfig } from '@fss/config';
-import { onShutdown, createLogger, createPgPool, createRedis, seedSale } from '@fss/infra';
+import {
+  onShutdown,
+  createLogger,
+  createPgPool,
+  createRedis,
+  RedisReservationStore,
+  seedSale,
+} from '@fss/infra';
 import { buildApp } from './app.js';
 
 const config = loadConfig();
@@ -41,6 +48,13 @@ try {
   process.exit(1);
 }
 
+const reservations = new RedisReservationStore(redis, logger);
+try {
+  await reservations.loadScripts();
+} catch (error) {
+  logger.error({ err: error }, 'failed to preload redis scripts');
+}
+
 const app = buildApp({
   redis,
   pool,
@@ -48,6 +62,7 @@ const app = buildApp({
   saleId: config.SALE_ID,
   productId: config.SALE_PRODUCT_ID,
   adminToken: config.ADMIN_TOKEN,
+  reservations,
 });
 
 onShutdown(logger, async () => {
