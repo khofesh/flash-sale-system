@@ -5,6 +5,7 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { RedisContainer } from '@testcontainers/redis';
 import type { StartedTestContainer } from 'testcontainers';
 import {
+  InMemoryBus,
   RedisReservationStore,
   createLogger,
   createPgPool,
@@ -20,6 +21,8 @@ import {
 } from '@fss/infra';
 import { buildApp } from '../apps/api/src/app.js';
 import { startOrchestrator } from '../apps/orchestrator/src/worker.js';
+import { startPayment } from '../apps/payment/src/worker.js';
+import { startShipping } from '../apps/shipping/src/worker.js';
 
 const images = {
   redis: 'redis:7.4.2-alpine',
@@ -36,6 +39,8 @@ describe('purchases', () => {
   let logger: Logger;
   let app: ReturnType<typeof buildApp>;
   let stop: StopFn;
+  let stopPayment: StopFn;
+  let stopShipping: StopFn;
 
   beforeAll(async () => {
     [redisContainer, postgresContainer] = await Promise.all([
@@ -74,17 +79,24 @@ describe('purchases', () => {
     });
     await app.ready();
 
+    const bus = new InMemoryBus();
     stop = await startOrchestrator({
       redis: workerRedis,
       pool,
       logger,
+      bus,
       saleId,
       claimIdleMs: 200,
       claimIntervalMs: 200,
+      sweepIntervalMs: 100,
     });
+    stopPayment = await startPayment({ bus, logger, latencyMs: 0, failureRate: 0 });
+    stopShipping = await startShipping({ bus, logger, latencyMs: 0, failureRate: 0 });
   });
 
   afterAll(async () => {
+    await stopPayment?.();
+    await stopShipping?.();
     await stop?.();
     await app?.close();
     await redis?.quit();
@@ -196,7 +208,15 @@ describe('purchases', () => {
       'SELECT type FROM saga_events WHERE order_id = $1 ORDER BY id',
       [body.orderId],
     );
-    expect(events.rows.map((row) => row.type)).toEqual(['order.reserved', 'order.completed']);
+    expect(events.rows.map((row) => row.type)).toEqual([
+      'order.reserved',
+      'order.payment_pending',
+      'payment.requested',
+      'order.paid',
+      'order.shipping_pending',
+      'shipping.requested',
+      'order.completed',
+    ]);
     expect(await redis.get(saleRedisKeys(saleId).stock)).toBe('2');
   });
 
@@ -312,10 +332,11 @@ describe('purchases', () => {
     // Simulates the Redis layer letting a second reservation through for the
     // same user (e.g. buyers set lost): the DB index must refuse it, and the
     // unit it took must go back to stock exactly once.
-    const { reservations, stock } = saleRedisKeys(saleId);
-    await redis.decr(stock);
+    const { reservations, stock, buyers, holders } = saleRedisKeys(saleId);
+    await redis.del(buyers, holders);
     const second = randomUUID();
-    await redis.xadd(reservations, '*', 'reservationId', second, 'userId', 'alice', 'ts', '1');
+    const store = new RedisReservationStore(redis, logger);
+    expect((await store.reserve(saleId, 'alice', second)).status).toBe('RESERVED');
 
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline && (await redis.get(stock)) !== '2') await sleep(100);
@@ -338,11 +359,14 @@ describe('purchases', () => {
     const { orderId } = first.json();
     await waitForStatus('bob', 'COMPLETED');
 
+    // A different reservation holds the unit: the user has bought again.
+    const { holders } = saleRedisKeys(saleId);
+    await redis.hset(holders, 'bob', randomUUID());
     await pool.query(`UPDATE orders SET status = 'CANCELLED' WHERE id = $1`, [orderId]);
     const cancelled = await getPurchase('bob');
     expect(cancelled.json()).toMatchObject({ status: 'RESERVED', secured: true });
 
-    await redis.srem(saleRedisKeys(saleId).buyers, 'bob');
+    await redis.hdel(holders, 'bob');
     const released = await getPurchase('bob');
     expect(released.json()).toMatchObject({ status: 'CANCELLED', secured: false, orderId });
   });

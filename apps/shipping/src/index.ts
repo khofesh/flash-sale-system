@@ -16,7 +16,12 @@ const bus = new SqsBus(
   logger,
 );
 
-const stop = await startShipping({ bus, logger });
+const stop = await startShipping({
+  bus,
+  logger,
+  latencyMs: config.SHIPPING_LATENCY_MS,
+  failureRate: config.SHIPPING_FAILURE_RATE,
+});
 
 onShutdown(logger, async () => {
   await stop();

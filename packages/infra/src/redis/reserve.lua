@@ -1,6 +1,7 @@
 -- Atomic reservation (SPEC §5.2).
 -- KEYS[1] sale:{id}:meta   KEYS[2] sale:{id}:stock
 -- KEYS[3] sale:{id}:buyers KEYS[4] sale:{id}:reservations
+-- KEYS[5] sale:{id}:holders
 -- ARGV[1] userId           ARGV[2] reservationId
 --
 -- The sale window is checked against Redis TIME, the same clock every replica
@@ -40,6 +41,7 @@ end
 
 redis.call('DECR', KEYS[2])
 redis.call('SADD', KEYS[3], ARGV[1])
+redis.call('HSET', KEYS[5], ARGV[1], ARGV[2])
 redis.call('XADD', KEYS[4], '*', 'reservationId', ARGV[2], 'userId', ARGV[1], 'ts', now)
 
 return {'RESERVED', ARGV[2]}

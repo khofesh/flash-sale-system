@@ -38,7 +38,6 @@ export const SECURED_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderSta
 
 export const FINAL_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
   'COMPLETED',
-  'SHIPPING_FAILED',
   'CANCELLED',
   'REFUNDED',
 ]);

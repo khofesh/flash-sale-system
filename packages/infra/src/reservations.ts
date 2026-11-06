@@ -9,8 +9,13 @@ const releaseSource = readFileSync(new URL('./redis/release.lua', import.meta.ur
 
 export interface ReservationStore {
   reserve(saleId: string, userId: string, reservationId: string): Promise<ReserveResult>;
-  /** Returns true when this call released the unit, false when it was already released. */
-  release(saleId: string, userId: string): Promise<boolean>;
+  /**
+   * Returns the unit held by this reservation. Returns false when it is not the
+   * user's current holder: already released, or a stale order after a re-purchase.
+   */
+  release(saleId: string, userId: string, reservationId: string): Promise<boolean>;
+  /** The reservation currently holding the user's unit, if any. */
+  holder(saleId: string, userId: string): Promise<string | null>;
   isBuyer(saleId: string, userId: string): Promise<boolean>;
 }
 
@@ -42,23 +47,27 @@ export class RedisReservationStore implements ReservationStore {
     const reply = await this.evaluate(
       'reserve',
       reserveSource,
-      4,
-      [keys.meta, keys.stock, keys.buyers, keys.reservations],
+      5,
+      [keys.meta, keys.stock, keys.buyers, keys.reservations, keys.holders],
       [userId, reservationId],
     );
     return parseReserveReply(reply);
   }
 
-  async release(saleId: string, userId: string): Promise<boolean> {
+  async release(saleId: string, userId: string, reservationId: string): Promise<boolean> {
     const keys = saleRedisKeys(saleId);
     const reply = await this.evaluate(
       'release',
       releaseSource,
-      2,
-      [keys.buyers, keys.stock],
-      [userId],
+      3,
+      [keys.buyers, keys.stock, keys.holders],
+      [userId, reservationId],
     );
     return Number(reply) === 1;
+  }
+
+  async holder(saleId: string, userId: string): Promise<string | null> {
+    return this.redis.hget(saleRedisKeys(saleId).holders, userId);
   }
 
   async isBuyer(saleId: string, userId: string): Promise<boolean> {

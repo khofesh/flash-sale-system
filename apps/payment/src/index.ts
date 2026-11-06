@@ -16,7 +16,13 @@ const bus = new SqsBus(
   logger,
 );
 
-const stop = await startPayment({ bus, logger, latencyMs: config.PAYMENT_LATENCY_MS });
+const stop = await startPayment({
+  bus,
+  logger,
+  latencyMs: config.PAYMENT_LATENCY_MS,
+  failureRate: config.PAYMENT_FAILURE_RATE,
+  refundLatencyMs: Math.min(config.PAYMENT_LATENCY_MS, 200),
+});
 
 onShutdown(logger, async () => {
   await stop();

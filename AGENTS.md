@@ -11,9 +11,9 @@ A flash sale system: one product, limited stock, a fixed time window, one item p
 
 ## Status
 
-**PLAN Phases 0, 1 and 2 are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown. Phase 2 adds the atomic `reserve.lua`/`release.lua` scripts, `POST /api/purchases` with `Idempotency-Key`, `GET /api/purchases/:userId`, the Redis → Postgres reservation consumer, the `orders`/`saga_events`/`processed_messages` schema, the buy UI, the concurrency integration tests, and the spike/same-user stress scenarios with `stress/verify.ts`. Payment is an instant-success stub until Phase 3.
+**PLAN Phases 0, 1, 2 and 3 are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown. Phase 2 adds the atomic `reserve.lua`/`release.lua` scripts, `POST /api/purchases` with `Idempotency-Key`, `GET /api/purchases/:userId`, the Redis → Postgres reservation consumer, the `orders`/`saga_events`/`processed_messages` schema, the buy UI, the concurrency integration tests, and the spike/same-user stress scenarios with `stress/verify.ts`. Phase 3 adds the orchestrated payment/shipping saga: `core/orderStateMachine.ts`, conditional order transitions, SQS `payment.requested`/`shipping.requested`/result messages, deterministic payment/shipping mocks with configurable failure rates, the payment-timeout sweeper, compensation through `release.lua`, `GET /admin/reconcile`, saga integration tests and the Floci broker contract test.
 
-Next is **PLAN Phase 3** (payment and shipping saga). Don't start a later phase until the current phase's "Verify" block passes.
+Next is **PLAN Phase 4** (resilience). Don't start a later phase until the current phase's "Verify" block passes.
 
 ## Stack
 
@@ -59,8 +59,8 @@ Don't name the scripts `up` or `down`. pnpm already has commands with those name
 - **No oversell.** `sold + available == initial_stock` must hold at all times. `stress/verify.ts` checks it after every stress run.
 - **One active order per user per sale.** Two layers enforce this: `SISMEMBER` on the Redis buyers set, and the partial unique index on `orders(sale_id, user_id) WHERE status NOT IN ('CANCELLED','REFUNDED')`.
 - **The reserve is a single atomic Lua script.** `reserve.lua` checks the window against Redis `TIME`, checks the buyers set and the stock, then runs DECR + SADD + XADD. Don't split it into multiple round trips.
-- **Compensation is idempotent.** `release.lua` does SREM + INCR, and running it twice must be a no-op.
-- **Saga transitions are conditional UPDATEs**, written as `WHERE status = <expected>`. Consumers dedupe messages through `processed_messages`.
+- **Compensation is idempotent.** `release.lua` does HDEL + SREM + INCR only for the reservation in `sale:{id}:holders`. Running it twice, or for an older order after a re-purchase, must be a no-op. `orders.released_at` makes a pending release durable; the sweeper retries it.
+- **Saga transitions are conditional UPDATEs**, written as `WHERE status = <expected>`. A transition that does not apply replans the event against the current status. Consumers dedupe messages through `processed_messages`, and result messages have derived ids (`<orderId>:<type>`).
 - **Fail closed.** If Redis is unavailable, the purchase endpoint returns 503. It must never fall back to an unsafe path.
 - Purchase responses: 202 RESERVED, 409 ALREADY_PURCHASED, 410 SOLD_OUT, 403 NOT_STARTED/ENDED, 400, 429, 503.
 

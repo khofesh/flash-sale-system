@@ -66,12 +66,7 @@ const orderLabels: Record<OrderStatus, string> = {
   REFUNDED: 'Refunded',
 };
 
-const finalStatuses = new Set<OrderStatus>([
-  'COMPLETED',
-  'SHIPPING_FAILED',
-  'CANCELLED',
-  'REFUNDED',
-]);
+const finalStatuses = new Set<OrderStatus>(['COMPLETED', 'CANCELLED', 'REFUNDED']);
 
 function formatCountdown(milliseconds: number): string {
   const total = Math.max(0, Math.ceil(milliseconds / 1000));
@@ -320,15 +315,17 @@ export function App() {
   const status = purchase?.status;
   const progress = stepIndex(status);
   const cancelled = status === 'CANCELLED' || status === 'REFUNDED' || status === 'SHIPPING_FAILED';
+  // SHIPPING_FAILED still holds the unit until the refund completes.
+  const canRetry = cancelled && status !== 'SHIPPING_FAILED' && sale?.status === 'ACTIVE';
 
   return (
     <main className="page">
       <header>
-        <p className="eyebrow">Phase 2 · atomic reservation</p>
+        <p className="eyebrow">Phase 3 · payment and shipping saga</p>
         <h1>Flash sale</h1>
         <p className="lede">
-          One unit per user, decided atomically in Redis. The sale window and stock below come from
-          the same clock and keys the purchase path uses.
+          One unit per user, decided atomically in Redis. Payment and shipping run as a compensating
+          saga: a failed charge or shipment returns the unit to stock.
         </p>
       </header>
 
@@ -416,9 +413,13 @@ export function App() {
 
           {cancelled ? (
             <p className="cancelled">
-              {status === 'SHIPPING_FAILED' ? 'Shipping failed' : 'Cancelled'}
-              {purchase.failureReason ? `: ${purchase.failureReason}` : '.'} You can try again while
-              the sale is live.
+              {status === 'SHIPPING_FAILED'
+                ? 'Shipping failed'
+                : status === 'REFUNDED'
+                  ? 'Refunded'
+                  : 'Cancelled'}
+              {purchase.failureReason ? `: ${purchase.failureReason}` : '.'}
+              {canRetry ? ' Try again while the sale is live.' : ''}
             </p>
           ) : (
             <ol className="progress">

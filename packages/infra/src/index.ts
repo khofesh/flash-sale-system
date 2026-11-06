@@ -6,6 +6,7 @@ export * from './migrations.js';
 export * from './orderRepo.js';
 export * from './pg.js';
 export * from './queues.js';
+export * from './reconcile.js';
 export * from './redis.js';
 export * from './reservations.js';
 export * from './saleRepo.js';

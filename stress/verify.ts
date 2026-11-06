@@ -6,24 +6,16 @@ import {
   createPgPool,
   createRedis,
   createSqsClient,
-  saleRedisKeys,
+  reconcileSale,
   type Pool,
+  type ReconcileReport,
   type Redis,
 } from '@fss/infra';
 
-interface Snapshot {
-  stock: number;
-  liveOrders: number;
-  liveUsers: number;
-  allOrders: number;
-  unpersisted: number;
-  buyers: number;
-}
-
 /**
- * Checks the SPEC §5.3 invariant: Redis stock plus live orders plus stream
- * entries the orchestrator has not persisted equals the sale's total stock.
- * Waits for the stream to drain first, since k6 finishes before the workers do.
+ * Checks the SPEC §5.3 invariant through the same `reconcileSale` that backs
+ * `/admin/reconcile`. Waits for reservations and compensation to drain first,
+ * since k6 finishes before the workers do.
  */
 export async function verifyStack(): Promise<void> {
   const config = loadConfig();
@@ -39,31 +31,42 @@ export async function verifyStack(): Promise<void> {
   try {
     const totalStock = await readTotalStock(pool, config.SALE_ID);
     const deadline = Date.now() + 45_000;
-    let snapshot = await readSnapshot(redis, pool, config.SALE_ID, totalStock);
+    let report = await readReport(redis, pool, config.SALE_ID);
 
-    while (snapshot.unpersisted > 0 && Date.now() < deadline) {
+    while (!isDrained(report) && Date.now() < deadline) {
       await sleep(500);
-      snapshot = await readSnapshot(redis, pool, config.SALE_ID, totalStock);
+      report = await readReport(redis, pool, config.SALE_ID);
     }
 
     console.log(
-      `\nverify ${config.SALE_ID}: total=${totalStock} stock=${snapshot.stock} ` +
-        `live=${snapshot.liveOrders} buyers=${snapshot.buyers} unpersisted=${snapshot.unpersisted}`,
+      `\nverify ${config.SALE_ID}: total=${totalStock} stock=${report.stock} ` +
+        `live=${report.liveOrders} buyers=${report.buyers} unpersisted=${report.unpersisted} ` +
+        `pendingReleases=${report.pendingReleases}`,
     );
 
-    assert(snapshot.unpersisted === 0, `${snapshot.unpersisted} reservations were never persisted`);
-    assert(snapshot.liveOrders <= totalStock, 'more live orders than stock');
+    assert(report.settled, 'Redis never stopped changing, so the invariant could not be read');
+    assert(report.unpersisted === 0, `${report.unpersisted} reservations were never persisted`);
+    assert(report.pendingReleases === 0, `${report.pendingReleases} units were never released`);
     assert(
-      snapshot.liveUsers === snapshot.liveOrders,
-      `duplicate live orders: ${snapshot.liveOrders} orders for ${snapshot.liveUsers} users`,
+      report.totalStock === totalStock,
+      `Redis total ${report.totalStock} disagrees with Postgres total ${totalStock}`,
     );
     assert(
-      snapshot.buyers === snapshot.liveOrders,
-      `Redis buyers set (${snapshot.buyers}) disagrees with live orders (${snapshot.liveOrders})`,
+      Number.isFinite(report.stock) && report.stock >= 0 && report.stock <= totalStock,
+      `Redis stock ${report.stock} is outside 0..${totalStock}`,
+    );
+    assert(report.liveOrders <= totalStock, 'more live orders than stock');
+    assert(
+      report.liveUsers === report.liveOrders,
+      `duplicate live orders: ${report.liveOrders} orders for ${report.liveUsers} users`,
     );
     assert(
-      snapshot.stock + snapshot.liveOrders + snapshot.unpersisted === totalStock,
-      `invariant broken: ${snapshot.stock} + ${snapshot.liveOrders} + ${snapshot.unpersisted} != ${totalStock}`,
+      report.buyersConsistent,
+      `Redis buyers set (${report.buyers}) disagrees with live orders (${report.liveOrders})`,
+    );
+    assert(
+      report.drift === 0,
+      `invariant broken: ${report.stock} + ${report.liveOrders} != ${totalStock}`,
     );
 
     const deadLetters = await countDeadLetters(sqs);
@@ -87,58 +90,14 @@ async function readTotalStock(pool: Pool, saleId: string): Promise<number> {
   return row.total_stock;
 }
 
-async function readSnapshot(
-  redis: Redis,
-  pool: Pool,
-  saleId: string,
-  totalStock: number,
-): Promise<Snapshot> {
-  const keys = saleRedisKeys(saleId);
-  const stockRaw = await redis.get(keys.stock);
-  if (stockRaw === null) {
-    throw new Error(`Redis stock for ${saleId} is missing`);
-  }
-  const stock = Number(stockRaw);
-  const buyers = await redis.scard(keys.buyers);
+async function readReport(redis: Redis, pool: Pool, saleId: string): Promise<ReconcileReport> {
+  const report = await reconcileSale(pool, redis, saleId);
+  if (!report) throw new Error(`Sale ${saleId} does not exist in Redis`);
+  return report;
+}
 
-  const live = await pool.query<{ live: number; users: number; all_orders: number }>(
-    `SELECT
-       count(*) FILTER (WHERE status NOT IN ('CANCELLED', 'REFUNDED'))::int AS live,
-       count(DISTINCT user_id) FILTER (WHERE status NOT IN ('CANCELLED', 'REFUNDED'))::int AS users,
-       count(*)::int AS all_orders
-     FROM orders
-     WHERE sale_id = $1`,
-    [saleId],
-  );
-  const row = live.rows[0] ?? { live: 0, users: 0, all_orders: 0 };
-
-  const orderIds = await pool.query<{ id: string }>('SELECT id FROM orders WHERE sale_id = $1', [
-    saleId,
-  ]);
-  const persisted = new Set(orderIds.rows.map((order) => order.id));
-
-  const entries = (await redis.xrange(keys.reservations, '-', '+')) as Array<[string, string[]]>;
-  let unpersisted = 0;
-  for (const [, fields] of entries) {
-    const index = fields.indexOf('reservationId');
-    const reservationId = index >= 0 ? fields[index + 1] : undefined;
-    if (!reservationId || !persisted.has(reservationId)) {
-      unpersisted += 1;
-    }
-  }
-
-  if (!Number.isFinite(stock) || stock < 0 || stock > totalStock) {
-    throw new Error(`Redis stock ${stockRaw} is outside 0..${totalStock}`);
-  }
-
-  return {
-    stock,
-    liveOrders: row.live,
-    liveUsers: row.users,
-    allOrders: row.all_orders,
-    unpersisted,
-    buyers,
-  };
+function isDrained(report: ReconcileReport): boolean {
+  return report.settled && report.unpersisted === 0 && report.pendingReleases === 0;
 }
 
 function assert(condition: boolean, message: string): void {
