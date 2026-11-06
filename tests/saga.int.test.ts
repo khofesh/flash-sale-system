@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
@@ -6,7 +7,9 @@ import type { StartedTestContainer } from 'testcontainers';
 import { makeEnvelope, type SagaEnvelope } from '@fss/core';
 import {
   InMemoryBus,
+  RESERVATION_CONSUMER,
   RedisReservationStore,
+  cancelTimedOutPayments,
   createLogger,
   createPgPool,
   createRedis,
@@ -130,11 +133,12 @@ describe('payment and shipping saga', () => {
     paymentTimeoutMs?: number;
     sweepIntervalMs?: number;
     withPayment?: boolean;
+    orchestratorPool?: Pool;
   }): Promise<void> {
     bus = bus ?? new InMemoryBus();
     const stopOrchestrator = await startOrchestrator({
       redis: workerRedis,
-      pool,
+      pool: options.orchestratorPool ?? pool,
       logger,
       bus,
       saleId,
@@ -198,6 +202,42 @@ describe('payment and shipping saga', () => {
     );
   }
 
+  async function reconcile() {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/admin/reconcile',
+      headers: { 'x-admin-token': adminToken },
+    });
+    return response.json();
+  }
+
+  async function stock(): Promise<string | null> {
+    return redis.get(saleRedisKeys(saleId).stock);
+  }
+
+  async function orderRow(orderId: string) {
+    const result = await pool.query<{
+      status: string;
+      payment_ref: string | null;
+      released_at: Date | null;
+    }>('SELECT status, payment_ref, released_at FROM orders WHERE id = $1', [orderId]);
+    return result.rows[0];
+  }
+
+  async function waitUntil(check: () => Promise<boolean>, what: string): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (await check()) return;
+      await sleep(25);
+    }
+    throw new Error(`Timed out waiting for ${what}`);
+  }
+
+  /** Compensation commits the status first and returns the unit just after. */
+  async function waitForStock(expected: number): Promise<void> {
+    await waitUntil(async () => (await stock()) === String(expected), `stock to reach ${expected}`);
+  }
+
   it('completes an order through payment and shipping', async () => {
     await startWorkers({ paymentFailureRate: 0, shippingFailureRate: 0 });
 
@@ -237,7 +277,7 @@ describe('payment and shipping saga', () => {
       final: true,
       failureReason: 'PAYMENT_DECLINED',
     });
-    expect(await redis.get(saleRedisKeys(saleId).stock)).toBe(String(totalStock));
+    await waitForStock(totalStock);
 
     // Compensation released the unit and removed the buyer, so the same user can
     // reserve again while the sale is ACTIVE (SPEC §15.1).
@@ -246,7 +286,7 @@ describe('payment and shipping saga', () => {
     expect(retry.json().orderId).not.toBe(firstOrder);
 
     await waitForStatus('bob', 'CANCELLED');
-    expect(await redis.get(saleRedisKeys(saleId).stock)).toBe(String(totalStock));
+    await waitForStock(totalStock);
   });
 
   it('refunds payment and returns the unit when shipping fails', async () => {
@@ -255,8 +295,7 @@ describe('payment and shipping saga', () => {
     const response = await purchase('carol');
     expect(response.statusCode).toBe(202);
 
-    const refunded = await waitForStatus('carol', ['SHIPPING_FAILED', 'REFUNDED']);
-    await waitForStatus('carol', 'REFUNDED');
+    const refunded = await waitForStatus('carol', 'REFUNDED');
     expect(refunded).toMatchObject({ secured: false, final: true });
 
     const order = await pool.query<{ status: string; failure_reason: string | null }>(
@@ -267,7 +306,7 @@ describe('payment and shipping saga', () => {
       status: 'REFUNDED',
       failure_reason: 'SHIPPING_UNAVAILABLE',
     });
-    expect(await redis.get(saleRedisKeys(saleId).stock)).toBe(String(totalStock));
+    await waitForStock(totalStock);
   });
 
   it('cancels a timed-out payment and refunds a late success', async () => {
@@ -288,7 +327,7 @@ describe('payment and shipping saga', () => {
       const { orderId } = response.json();
 
       await waitForStatus('dave', 'CANCELLED');
-      expect(await redis.get(saleRedisKeys(saleId).stock)).toBe(String(totalStock));
+      await waitForStock(totalStock);
 
       captured.length = 0;
       const lateSuccess = makeEnvelope(orderId, 'payment.succeeded', {
@@ -301,16 +340,223 @@ describe('payment and shipping saga', () => {
         if (captured.some((message) => message.type === 'payment.refund_requested')) break;
         await sleep(25);
       }
-      expect(captured.map((message) => message.type)).toContain('payment.refund_requested');
+      const refund = captured.find((message) => message.type === 'payment.refund_requested');
+      expect(refund?.payload).toMatchObject({ paymentRef: 'pay_late' });
 
-      const order = await pool.query<{ status: string }>(
-        'SELECT status FROM orders WHERE id = $1',
-        [orderId],
-      );
-      expect(order.rows[0]?.status).toBe('CANCELLED');
-      expect(await redis.get(saleRedisKeys(saleId).stock)).toBe(String(totalStock));
+      expect(await orderRow(orderId)).toMatchObject({
+        status: 'CANCELLED',
+        payment_ref: 'pay_late',
+      });
+      await waitForStock(totalStock);
+
+      // The refund's completion is recorded on the cancelled order.
+      await bus.publish('order-events', makeEnvelope(orderId, 'payment.refunded'));
+      await waitForStatus('dave', 'REFUNDED');
+      await waitForStock(totalStock);
     } finally {
       await stopCapture();
+    }
+  });
+
+  it('does not let a stale payment.failed release a newer order', async () => {
+    await startWorkers({ withPayment: false });
+
+    const first = (await purchase('gina')).json().orderId;
+    await waitForStatus('gina', 'PAYMENT_PENDING');
+    await bus.publish('order-events', makeEnvelope(first, 'payment.failed'));
+    await waitForStatus('gina', 'CANCELLED');
+    await waitForStock(totalStock);
+
+    const second = await purchase('gina');
+    expect(second.statusCode).toBe(202);
+    await waitForStatus('gina', 'PAYMENT_PENDING');
+    expect(await stock()).toBe(String(totalStock - 1));
+
+    await bus.publish('order-events', makeEnvelope(first, 'payment.failed'));
+    await sleep(200);
+
+    expect(await stock()).toBe(String(totalStock - 1));
+    expect((await purchase('gina')).statusCode).toBe(409);
+    expect(await reconcile()).toMatchObject({ drift: 0, buyersConsistent: true, ok: true });
+  });
+
+  it('refunds a payment.succeeded that loses the race to the sweeper', async () => {
+    // Cancels the order right after the handler reads it, as the sweeper would.
+    let raceOrderId: string | undefined;
+    const racingPool = new Proxy(pool, {
+      get(target, key) {
+        if (key === 'query') {
+          return async (...args: Parameters<Pool['query']>) => {
+            const result = await (target.query as (...a: unknown[]) => Promise<unknown>)(...args);
+            const values = args[1] as unknown as unknown[] | undefined;
+            if (raceOrderId && values?.[0] === raceOrderId) {
+              raceOrderId = undefined;
+              await target.query(`UPDATE orders SET status = 'CANCELLED' WHERE id = $1`, [
+                values[0],
+              ]);
+            }
+            return result;
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await startWorkers({ withPayment: false, orchestratorPool: racingPool });
+
+    const captured: SagaEnvelope[] = [];
+    const stopCapture = await bus.subscribe('payment-requests', async (message) => {
+      captured.push(message.body as SagaEnvelope);
+    });
+
+    try {
+      const { orderId } = (await purchase('hugo')).json();
+      await waitForStatus('hugo', 'PAYMENT_PENDING');
+
+      raceOrderId = orderId;
+      await bus.publish(
+        'order-events',
+        makeEnvelope(orderId, 'payment.succeeded', { paymentRef: 'pay_race' }),
+      );
+
+      await waitUntil(
+        async () => captured.some((message) => message.type === 'payment.refund_requested'),
+        'the refund request',
+      );
+      expect(await orderRow(orderId)).toMatchObject({
+        status: 'CANCELLED',
+        payment_ref: 'pay_race',
+      });
+    } finally {
+      await stopCapture();
+    }
+  });
+
+  it('retries a release lost in a crash after the cancel committed', async () => {
+    await startWorkers({ withPayment: false });
+    const { orderId } = (await purchase('iris')).json();
+    await waitForStatus('iris', 'PAYMENT_PENDING');
+    await stopWorkers();
+
+    // The sweeper's commit, with the process dying before any release.
+    await pool.query(`UPDATE orders SET updated_at = now() - interval '1 hour' WHERE id = $1`, [
+      orderId,
+    ]);
+    expect(await cancelTimedOutPayments(pool, 1_000)).toHaveLength(1);
+
+    // Compensation in progress holds the user and is not drift.
+    expect(await stock()).toBe(String(totalStock - 1));
+    expect(await reconcile()).toMatchObject({ pendingReleases: 1, drift: 0, ok: true });
+    expect((await purchase('iris')).statusCode).toBe(409);
+    expect(await getPurchase('iris').then((view) => view.json())).toMatchObject({
+      status: 'CANCELLED',
+      final: true,
+    });
+
+    await startWorkers({ withPayment: false, sweepIntervalMs: 25 });
+    await waitForStock(totalStock);
+    await waitUntil(
+      async () => (await orderRow(orderId))?.released_at != null,
+      'the release to be recorded',
+    );
+    expect(await reconcile()).toMatchObject({ pendingReleases: 0, drift: 0, ok: true });
+
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/api/purchases',
+      payload: { userId: 'iris' },
+    });
+    expect(retry.statusCode).toBe(202);
+  });
+
+  it('retries a failed conflict release when the stream entry is redelivered', async () => {
+    await startWorkers({ withPayment: false });
+    await stopWorkers();
+
+    // persistReservation committed its dedupe row and returned 'conflict', then
+    // the release failed: the entry is delivered again with no order row.
+    const { orderId } = (await purchase('jude')).json();
+    await pool.query('INSERT INTO processed_messages (consumer, message_id) VALUES ($1, $2)', [
+      RESERVATION_CONSUMER,
+      orderId,
+    ]);
+    expect(await stock()).toBe(String(totalStock - 1));
+
+    await startWorkers({ withPayment: false });
+    await waitForStock(totalStock);
+    expect((await pool.query('SELECT 1 FROM orders WHERE id = $1', [orderId])).rowCount).toBe(0);
+
+    // The entry stays in the stream, but it no longer counts as in flight.
+    expect(await reconcile()).toMatchObject({ unpersisted: 0, drift: 0, ok: true });
+  });
+
+  it('reports SHIPPING_FAILED as in progress until the refund completes', async () => {
+    await startWorkers({ withPayment: false, shippingFailureRate: 1 });
+    const { orderId } = (await purchase('kim')).json();
+    await waitForStatus('kim', 'PAYMENT_PENDING');
+
+    await bus.publish(
+      'order-events',
+      makeEnvelope(orderId, 'payment.succeeded', { paymentRef: 'pay_kim' }),
+    );
+
+    const view = await waitForStatus('kim', 'SHIPPING_FAILED');
+    expect(view).toMatchObject({ orderId, status: 'SHIPPING_FAILED', secured: false });
+    expect(view.final).toBeUndefined();
+    expect(await stock()).toBe(String(totalStock - 1));
+
+    await bus.publish('order-events', makeEnvelope(orderId, 'payment.refunded'));
+    expect(await waitForStatus('kim', 'REFUNDED')).toMatchObject({ final: true });
+    await waitForStock(totalStock);
+    expect(await reconcile()).toMatchObject({ drift: 0, ok: true });
+  });
+
+  it('dedupes results when a request is redelivered', async () => {
+    const localBus = new InMemoryBus();
+    const results: SagaEnvelope[] = [];
+    const stopCapture = await localBus.subscribe('order-events', async (message) => {
+      results.push(message.body as SagaEnvelope);
+    });
+    const stopPayment = await startPayment({
+      bus: localBus,
+      logger,
+      latencyMs: 0,
+      refundLatencyMs: 0,
+      failureRate: 1,
+    });
+    const stopShipping = await startShipping({
+      bus: localBus,
+      logger,
+      latencyMs: 0,
+      failureRate: 1,
+    });
+
+    try {
+      const orderId = randomUUID();
+      for (const [queue, type] of [
+        ['payment-requests', 'payment.requested'],
+        ['payment-requests', 'payment.refund_requested'],
+        ['shipping-requests', 'shipping.requested'],
+      ] as const) {
+        await localBus.publish(queue, makeEnvelope(orderId, type));
+        await localBus.publish(queue, makeEnvelope(orderId, type));
+      }
+
+      expect(results.map((result) => result.type)).toEqual([
+        'payment.failed',
+        'payment.failed',
+        'payment.refunded',
+        'payment.refunded',
+        'shipping.failed',
+        'shipping.failed',
+      ]);
+      for (let index = 0; index < results.length; index += 2) {
+        expect(results[index]?.messageId).toBe(results[index + 1]?.messageId);
+      }
+    } finally {
+      await stopCapture();
+      await stopPayment();
+      await stopShipping();
     }
   });
 

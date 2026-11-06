@@ -99,7 +99,8 @@ export const ORDER_TRANSITIONS: Readonly<
   },
   SHIPPING_FAILED: { 'payment.refunded': 'REFUNDED' },
   COMPLETED: {},
-  CANCELLED: {},
+  // A charge that landed after the cancellation is recorded, refunded, then closed.
+  CANCELLED: { 'payment.succeeded': 'CANCELLED', 'payment.refunded': 'REFUNDED' },
   REFUNDED: {},
 };
 
@@ -120,10 +121,9 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
 
   switch (event.type) {
     case 'reservation.persisted': {
-      const to = transitionTarget(status, event.type);
-      if (to) {
+      if (status === 'RESERVED') {
         return [
-          { kind: 'transition', from: status, to, type: 'order.payment_pending' },
+          move(status, event.type, 'order.payment_pending'),
           { kind: 'publish', type: 'payment.requested' },
         ];
       }
@@ -137,33 +137,27 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
 
       if (status === 'PAYMENT_PENDING') {
         return [
-          { kind: 'transition', from: 'PAYMENT_PENDING', to: 'PAID', type: 'order.paid', patch },
-          {
-            kind: 'transition',
-            from: 'PAID',
-            to: 'SHIPPING_PENDING',
-            type: 'order.shipping_pending',
-          },
+          move('PAYMENT_PENDING', event.type, 'order.paid', patch),
+          move('PAID', event.type, 'order.shipping_pending'),
           { kind: 'publish', type: 'shipping.requested' },
         ];
       }
       if (status === 'PAID') {
         return [
-          {
-            kind: 'transition',
-            from: 'PAID',
-            to: 'SHIPPING_PENDING',
-            type: 'order.shipping_pending',
-          },
+          move('PAID', event.type, 'order.shipping_pending'),
           { kind: 'publish', type: 'shipping.requested' },
         ];
       }
       if (status === 'SHIPPING_PENDING') {
         return [{ kind: 'publish', type: 'shipping.requested' }];
       }
-      // The payment succeeded after the sweeper cancelled the order: refund it.
+      // The payment succeeded after the sweeper cancelled the order: keep the
+      // charge reference, which the refund needs, and refund it.
       if (status === 'CANCELLED') {
-        return [{ kind: 'publish', type: 'payment.refund_requested' }];
+        return [
+          move('CANCELLED', event.type, 'order.late_payment', patch),
+          { kind: 'publish', type: 'payment.refund_requested' },
+        ];
       }
       return [];
     }
@@ -177,13 +171,7 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
 
       if (status === 'PAYMENT_PENDING') {
         return [
-          {
-            kind: 'transition',
-            from: 'PAYMENT_PENDING',
-            to: 'CANCELLED',
-            type: 'order.cancelled',
-            patch: { failureReason: reason },
-          },
+          move('PAYMENT_PENDING', event.type, 'order.cancelled', { failureReason: reason }),
           { kind: 'release', reason },
         ];
       }
@@ -195,15 +183,7 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
     case 'shipping.succeeded': {
       const patch = referencePatch('shipmentRef', event.payload);
       if (status === 'SHIPPING_PENDING') {
-        return [
-          {
-            kind: 'transition',
-            from: 'SHIPPING_PENDING',
-            to: 'COMPLETED',
-            type: 'order.completed',
-            patch,
-          },
-        ];
+        return [move('SHIPPING_PENDING', event.type, 'order.completed', patch)];
       }
       return [];
     }
@@ -212,13 +192,7 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
       const reason = stringField(event.payload, 'reason') ?? 'SHIPPING_FAILED';
       if (status === 'SHIPPING_PENDING') {
         return [
-          {
-            kind: 'transition',
-            from: 'SHIPPING_PENDING',
-            to: 'SHIPPING_FAILED',
-            type: 'order.shipping_failed',
-            patch: { failureReason: reason },
-          },
+          move('SHIPPING_PENDING', event.type, 'order.shipping_failed', { failureReason: reason }),
           { kind: 'publish', type: 'payment.refund_requested' },
         ];
       }
@@ -230,14 +204,9 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
     }
 
     case 'payment.refunded': {
-      if (status === 'SHIPPING_FAILED') {
+      if (status === 'SHIPPING_FAILED' || status === 'CANCELLED') {
         return [
-          {
-            kind: 'transition',
-            from: 'SHIPPING_FAILED',
-            to: 'REFUNDED',
-            type: 'order.refunded',
-          },
+          move(status, event.type, 'order.refunded'),
           { kind: 'release', reason: 'REFUNDED' },
         ];
       }
@@ -246,6 +215,16 @@ export function nextAction(order: OrderSnapshot, event: SagaEvent): SagaStep[] {
       return [];
     }
   }
+}
+
+/**
+ * Builds a transition from the table, the single source of legal moves. Throws
+ * if a plan asks for a move the table does not allow, which is a coding error.
+ */
+function move(from: OrderStatus, event: SagaEventType, type: string, patch?: OrderPatch): SagaStep {
+  const to = transitionTarget(from, event);
+  if (!to) throw new Error(`Illegal transition: ${from} on ${event}`);
+  return { kind: 'transition', from, to, type, ...(patch ? { patch } : {}) };
 }
 
 export function makeEnvelope<T extends Record<string, unknown>>(
@@ -262,6 +241,19 @@ export function makeEnvelope<T extends Record<string, unknown>>(
     occurredAt: new Date().toISOString(),
     payload,
   };
+}
+
+/**
+ * Envelope for a payment/shipping result. An order has one outcome per result
+ * type, so its id is derived rather than random: redelivering a request produces
+ * the same id, and the orchestrator's `processed_messages` dedupes the result.
+ */
+export function makeResultEnvelope<T extends Record<string, unknown>>(
+  orderId: string,
+  type: SagaMessageType,
+  payload: T = {} as T,
+): SagaEnvelope<T> {
+  return { ...makeEnvelope(orderId, type, payload), messageId: `${orderId}:${type}` };
 }
 
 export function isSagaEnvelope(value: unknown): value is SagaEnvelope {

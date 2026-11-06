@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseReserveReply, purchaseResponse } from './purchase.js';
+import { FINAL_ORDER_STATUSES, parseReserveReply, purchaseResponse } from './purchase.js';
 
 describe('purchaseResponse', () => {
   const cases = [
@@ -28,6 +28,13 @@ describe('purchaseResponse', () => {
 
   it('marks an unavailable response as retryable', () => {
     expect(purchaseResponse({ status: 'UNAVAILABLE' }).retryAfter).toBe(1);
+  });
+});
+
+describe('FINAL_ORDER_STATUSES', () => {
+  it('excludes SHIPPING_FAILED, which still moves on to REFUNDED', () => {
+    expect(FINAL_ORDER_STATUSES.has('SHIPPING_FAILED')).toBe(false);
+    expect(FINAL_ORDER_STATUSES.has('REFUNDED')).toBe(true);
   });
 });
 

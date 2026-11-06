@@ -78,6 +78,7 @@ export function saleRedisKeys(saleId: string) {
     meta: `sale:${tag}:meta`,
     stock: `sale:${tag}:stock`,
     buyers: `sale:${tag}:buyers`,
+    holders: `sale:${tag}:holders`,
     reservations: `sale:${tag}:reservations`,
   } as const;
 }
@@ -132,7 +133,7 @@ export async function seedSale(
  * rebuilt from the durable sale definition. A reset is refused while the sale
  * has live reservations (buyers set) or active orders, because restoring full
  * stock then would break `sold + available == initial_stock`. Resetting clears
- * the buyers set and the reservations stream, and recreates any consumer groups
+ * the buyers set, the holders hash and the reservations stream, and recreates any consumer groups
  * the stream had, so running consumers keep working.
  */
 export async function resetSale(pool: Pool, redis: Redis, sale: SaleRecord): Promise<void> {
@@ -160,7 +161,7 @@ export async function resetSale(pool: Pool, redis: Redis, sale: SaleRecord): Pro
   }
 
   const groups = await streamGroups(redis, keys.reservations);
-  const multi = redis.multi().del(keys.buyers).del(keys.reservations);
+  const multi = redis.multi().del(keys.buyers).del(keys.holders).del(keys.reservations);
   for (const group of groups) {
     multi.xgroup('CREATE', keys.reservations, group, '$', 'MKSTREAM');
   }

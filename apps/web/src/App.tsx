@@ -315,7 +315,8 @@ export function App() {
   const status = purchase?.status;
   const progress = stepIndex(status);
   const cancelled = status === 'CANCELLED' || status === 'REFUNDED' || status === 'SHIPPING_FAILED';
-  const canRetry = cancelled && sale?.status === 'ACTIVE';
+  // SHIPPING_FAILED still holds the unit until the refund completes.
+  const canRetry = cancelled && status !== 'SHIPPING_FAILED' && sale?.status === 'ACTIVE';
 
   return (
     <main className="page">

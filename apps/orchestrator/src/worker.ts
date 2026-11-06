@@ -6,6 +6,7 @@ import {
   isSagaResultEvent,
   makeEnvelope,
   nextAction,
+  type SagaEvent,
   type SagaMessageType,
   type SagaStep,
 } from '@fss/core';
@@ -13,9 +14,11 @@ import {
   ORDER_EVENTS_CONSUMER,
   RedisReservationStore,
   cancelTimedOutPayments,
+  findUnreleasedOrders,
   getOrderById,
   isMessageProcessed,
   markMessageProcessed,
+  markOrderReleased,
   persistReservation,
   recordSagaEvent,
   resolveMigrationsDir,
@@ -25,6 +28,7 @@ import {
   type Logger,
   type MessageBus,
   type OrderRecord,
+  type OrderRef,
   type Pool,
   type Redis,
   type ReservationStore,
@@ -32,6 +36,9 @@ import {
 } from '@fss/infra';
 
 export const RESERVATIONS_GROUP = 'orchestrator';
+
+/** Replans before leaving a message for redelivery; statuses only move forward. */
+const MAX_PLAN_ATTEMPTS = 5;
 
 export interface OrchestratorDeps {
   redis: Redis;
@@ -200,7 +207,8 @@ function consumeReservations(
  * A reservation that conflicts with a live order for the same user (the second
  * layer of the one-per-user rule) is never persisted; its unit goes back to
  * stock through `release.lua`, so `sold + available == initial_stock` keeps
- * holding.
+ * holding. A conflict is only reported once, so a redelivery with no order row
+ * is a conflict whose release failed: it releases again, which is idempotent.
  */
 async function handleReservation(
   deps: OrchestratorDeps,
@@ -217,8 +225,9 @@ async function handleReservation(
     reservedAt: fields.ts,
   });
 
-  if (outcome === 'conflict') {
-    const released = await reservations.release(saleId, fields.userId);
+  const order = outcome === 'conflict' ? undefined : await getOrderById(pool, fields.reservationId);
+  if (!order) {
+    const released = await reservations.release(saleId, fields.userId, fields.reservationId);
     logger.error(
       { ...log, released },
       'reservation conflicts with a live order for the user; unit returned',
@@ -226,18 +235,7 @@ async function handleReservation(
     return;
   }
 
-  const order = await getOrderById(pool, fields.reservationId);
-  if (!order) {
-    logger.error(log, 'reservation persisted but the order could not be read');
-    return;
-  }
-
-  await applySteps(
-    deps,
-    reservations,
-    order,
-    nextAction({ status: order.status }, { type: 'reservation.persisted' }),
-  );
+  await applyEvent(deps, reservations, order, { type: 'reservation.persisted' });
   logger.info(
     { ...log, outcome, status: order.status },
     outcome === 'inserted' ? 'reservation persisted' : 'reservation redelivered',
@@ -273,23 +271,46 @@ async function handleOrderEvent(
     return;
   }
 
-  const steps = nextAction(
-    { status: order.status },
-    { type: body.type, payload: body.payload as Record<string, unknown> },
-  );
-
-  await applySteps(deps, reservations, order, steps);
+  await applyEvent(deps, reservations, order, {
+    type: body.type,
+    payload: body.payload as Record<string, unknown>,
+  });
   // Marked only after every side effect (Redis release, SQS publish) succeeded,
   // so a crash mid-handling leaves the message for redelivery.
   await markMessageProcessed(pool, ORDER_EVENTS_CONSUMER, body.messageId);
 }
 
+/**
+ * Plans and applies an event. When a conditional transition loses a race (the
+ * sweeper cancelled the order under a late payment.succeeded, say) the plan is
+ * stale, so the event is replanned against the current status: it may still owe
+ * a side effect, such as the refund. Throws rather than dropping the event if
+ * the order will not settle, so the message is redelivered.
+ */
+async function applyEvent(
+  deps: OrchestratorDeps,
+  reservations: ReservationStore,
+  initial: OrderRecord,
+  event: SagaEvent,
+): Promise<void> {
+  let order = initial;
+  for (let attempt = 0; attempt < MAX_PLAN_ATTEMPTS; attempt += 1) {
+    if (await applySteps(deps, reservations, order, nextAction(order, event))) return;
+
+    const latest = await getOrderById(deps.pool, order.id);
+    if (!latest) throw new Error(`Order ${order.id} disappeared while applying ${event.type}`);
+    order = latest;
+  }
+  throw new Error(`Order ${order.id} did not settle while applying ${event.type}`);
+}
+
+/** Returns false when a conditional transition did not apply; the rest of the plan is skipped. */
 async function applySteps(
   deps: OrchestratorDeps,
   reservations: ReservationStore,
   initial: OrderRecord,
   steps: SagaStep[],
-): Promise<void> {
+): Promise<boolean> {
   const { pool, logger } = deps;
   let order = initial;
 
@@ -312,7 +333,7 @@ async function applySteps(
             { orderId: order.id, from: step.from, to: step.to },
             'conditional transition did not apply',
           );
-          return;
+          return false;
         }
 
         order = {
@@ -333,15 +354,27 @@ async function applySteps(
       }
 
       case 'release': {
-        const released = await reservations.release(order.saleId, order.userId);
-        logger.info(
-          { orderId: order.id, userId: order.userId, reason: step.reason, released },
-          released ? 'unit returned to stock' : 'unit was already released',
-        );
+        await releaseOrder(deps, reservations, order, step.reason);
         break;
       }
     }
   }
+  return true;
+}
+
+/** Returns the order's unit, then records it. A crash in between only repeats a no-op. */
+async function releaseOrder(
+  deps: OrchestratorDeps,
+  reservations: ReservationStore,
+  order: OrderRef,
+  reason: string,
+): Promise<void> {
+  const released = await reservations.release(order.saleId, order.userId, order.id);
+  await markOrderReleased(deps.pool, order.id);
+  deps.logger.info(
+    { orderId: order.id, userId: order.userId, reason, released },
+    released ? 'unit returned to stock' : 'unit was already released',
+  );
 }
 
 async function publish(deps: OrchestratorDeps, order: OrderRecord, type: SagaMessageType) {
@@ -359,7 +392,11 @@ async function publish(deps: OrchestratorDeps, order: OrderRecord, type: SagaMes
   deps.logger.info({ orderId: order.id, type }, 'saga message published');
 }
 
-/** Cancels PAYMENT_PENDING orders that outlived PAYMENT_TIMEOUT_MS. */
+/**
+ * Cancels PAYMENT_PENDING orders that outlived PAYMENT_TIMEOUT_MS, then returns
+ * the unit of every dead order still owing one, whatever cancelled it. Orders
+ * that fail stay unreleased, so the next pass retries them.
+ */
 function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationStore): StopFn {
   const { pool, logger } = deps;
   const timeoutMs = deps.paymentTimeoutMs ?? 60_000;
@@ -371,15 +408,22 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
       try {
         const expired = await cancelTimedOutPayments(pool, timeoutMs);
         for (const order of expired) {
-          const released = await reservations.release(order.saleId, order.userId);
-          logger.warn(
-            { orderId: order.id, saleId: order.saleId, released },
-            'payment timed out; order cancelled and unit released',
-          );
+          logger.warn({ orderId: order.id, saleId: order.saleId }, 'payment timed out');
         }
       } catch (error) {
         if (!running) return;
         logger.error({ err: error }, 'payment timeout sweep failed');
+      }
+
+      try {
+        for (const order of await findUnreleasedOrders(pool)) {
+          await releaseOrder(deps, reservations, order, 'SWEEP').catch((error: unknown) => {
+            logger.error({ err: error, orderId: order.id }, 'failed to release order');
+          });
+        }
+      } catch (error) {
+        if (!running) return;
+        logger.error({ err: error }, 'release sweep failed');
       }
 
       await sleep(intervalMs);

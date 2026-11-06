@@ -130,15 +130,17 @@ export function registerPurchaseRoutes(
       deps.logger.warn({ err: error }, 'failed to read order from postgres; falling back to redis');
     }
 
-    // A cancelled or refunded order no longer holds a unit. If the user bought
-    // again and the orchestrator has not persisted it yet, Redis knows first.
+    // If a different reservation holds the user's unit, they bought again and the
+    // orchestrator has not persisted it yet: Redis knows first. A holder equal to
+    // this order only means its compensation is still in progress.
     if (order && !SECURED_ORDER_STATUSES.has(order.status)) {
       try {
-        if (await deps.reservations.isBuyer(deps.saleId, userId)) {
+        const holder = await deps.reservations.holder(deps.saleId, userId);
+        if (holder && holder !== order.id) {
           return { userId, secured: true, status: 'RESERVED' as OrderStatus };
         }
       } catch (error) {
-        deps.logger.warn({ err: error }, 'failed to read buyers set from redis');
+        deps.logger.warn({ err: error }, 'failed to read reservation holder from redis');
       }
     }
 

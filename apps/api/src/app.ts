@@ -260,6 +260,10 @@ export function buildApp({
           if (!report) {
             return reply.code(404).send({ code: 'SALE_NOT_FOUND' });
           }
+          if (!report.settled) {
+            // Traffic never paused long enough for a consistent read: not drift.
+            return reply.code(503).header('Retry-After', '1').send(report);
+          }
           return reply.code(report.ok ? 200 : 409).send(report);
         } catch (error) {
           logger.error({ err: error, saleId }, 'reconcile failed');

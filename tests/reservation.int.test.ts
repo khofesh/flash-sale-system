@@ -118,17 +118,38 @@ describe('reserve/release Lua scripts', () => {
   it('releases a unit only once', async () => {
     await useSale({ totalStock: 1 });
     const { stock } = saleRedisKeys(saleId);
-    expect((await store.reserve(saleId, 'alice', randomUUID())).status).toBe('RESERVED');
+    const reservation = randomUUID();
+    expect((await store.reserve(saleId, 'alice', reservation)).status).toBe('RESERVED');
     expect(await redis.get(stock)).toBe('0');
+    expect(await store.holder(saleId, 'alice')).toBe(reservation);
 
-    expect(await store.release(saleId, 'alice')).toBe(true);
+    expect(await store.release(saleId, 'alice', reservation)).toBe(true);
+    expect(await redis.get(stock)).toBe('1');
+    expect(await store.holder(saleId, 'alice')).toBeNull();
+
+    expect(await store.release(saleId, 'alice', reservation)).toBe(false);
     expect(await redis.get(stock)).toBe('1');
 
-    expect(await store.release(saleId, 'alice')).toBe(false);
+    expect(await store.release(saleId, 'never-reserved', randomUUID())).toBe(false);
+    expect(await redis.get(stock)).toBe('1');
+  });
+
+  it('ignores a stale release for an older reservation after a re-purchase', async () => {
+    await useSale({ totalStock: 2 });
+    const { stock } = saleRedisKeys(saleId);
+    const older = randomUUID();
+    const newer = randomUUID();
+
+    await store.reserve(saleId, 'alice', older);
+    expect(await store.release(saleId, 'alice', older)).toBe(true);
+    await store.reserve(saleId, 'alice', newer);
     expect(await redis.get(stock)).toBe('1');
 
-    expect(await store.release(saleId, 'never-reserved')).toBe(false);
+    expect(await store.release(saleId, 'alice', older)).toBe(false);
     expect(await redis.get(stock)).toBe('1');
+    expect(await store.isBuyer(saleId, 'alice')).toBe(true);
+    expect(await store.holder(saleId, 'alice')).toBe(newer);
+    expect((await store.reserve(saleId, 'alice', randomUUID())).status).toBe('ALREADY_PURCHASED');
   });
 
   it('reloads its scripts after SCRIPT FLUSH', async () => {

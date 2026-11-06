@@ -332,10 +332,11 @@ describe('purchases', () => {
     // Simulates the Redis layer letting a second reservation through for the
     // same user (e.g. buyers set lost): the DB index must refuse it, and the
     // unit it took must go back to stock exactly once.
-    const { reservations, stock } = saleRedisKeys(saleId);
-    await redis.decr(stock);
+    const { reservations, stock, buyers, holders } = saleRedisKeys(saleId);
+    await redis.del(buyers, holders);
     const second = randomUUID();
-    await redis.xadd(reservations, '*', 'reservationId', second, 'userId', 'alice', 'ts', '1');
+    const store = new RedisReservationStore(redis, logger);
+    expect((await store.reserve(saleId, 'alice', second)).status).toBe('RESERVED');
 
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline && (await redis.get(stock)) !== '2') await sleep(100);
@@ -358,11 +359,14 @@ describe('purchases', () => {
     const { orderId } = first.json();
     await waitForStatus('bob', 'COMPLETED');
 
+    // A different reservation holds the unit: the user has bought again.
+    const { holders } = saleRedisKeys(saleId);
+    await redis.hset(holders, 'bob', randomUUID());
     await pool.query(`UPDATE orders SET status = 'CANCELLED' WHERE id = $1`, [orderId]);
     const cancelled = await getPurchase('bob');
     expect(cancelled.json()).toMatchObject({ status: 'RESERVED', secured: true });
 
-    await redis.srem(saleRedisKeys(saleId).buyers, 'bob');
+    await redis.hdel(holders, 'bob');
     const released = await getPurchase('bob');
     expect(released.json()).toMatchObject({ status: 'CANCELLED', secured: false, orderId });
   });

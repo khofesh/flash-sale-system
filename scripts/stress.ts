@@ -77,7 +77,7 @@ async function prepareSale(): Promise<void> {
     // Empty the stream first (keeping its consumer groups), so the orchestrator
     // cannot re-insert an old reservation between the TRUNCATE and the reset.
     await redis.xtrim(keys.reservations, 'MAXLEN', 0).catch(() => undefined);
-    await redis.del(keys.buyers);
+    await redis.del(keys.buyers, keys.holders);
     await pool.query('TRUNCATE orders, saga_events, processed_messages RESTART IDENTITY CASCADE');
 
     const now = Date.now();

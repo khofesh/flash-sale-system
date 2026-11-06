@@ -119,6 +119,8 @@ stateDiagram-v2
   SHIPPING_PENDING --> COMPLETED: shipping.succeeded
   SHIPPING_PENDING --> SHIPPING_FAILED: shipping.failed (after retries)
   SHIPPING_FAILED --> REFUNDED: refund (compensate payment) → release stock
+  CANCELLED --> CANCELLED: late payment.succeeded → record paymentRef, request refund
+  CANCELLED --> REFUNDED: payment.refunded (late charge reversed)
   CANCELLED --> [*]
   COMPLETED --> [*]
   REFUNDED --> [*]
@@ -126,10 +128,12 @@ stateDiagram-v2
 
 **Rules**
 
-- Transitions are applied with optimistic concurrency (`UPDATE ... WHERE id=$1 AND status=$expected`). If zero rows are updated, the message is a duplicate or arrived out of order. It is acked and ignored.
-- **Releasing stock** (compensation) runs a Lua script that, only if the user is in the buyers set, `SREM`s the user and `INCR`s stock. It is idempotent: calling it twice releases once.
+- Transitions are applied with optimistic concurrency (`UPDATE ... WHERE id=$1 AND status=$expected`). If zero rows are updated, the order moved on concurrently, so the event is planned again against the current status. It may still owe a side effect (a late `payment.succeeded` that lost the race to the sweeper still owes a refund), or it may be a duplicate that plans nothing, in which case it is acked and ignored.
+- **Releasing stock** (compensation) runs a Lua script that, only if this order's reservation is the one holding the user's unit (`sale:{id}:holders`), `HDEL`s the holder, `SREM`s the user and `INCR`s stock. It is idempotent: calling it twice releases once, and a stale event for an older order cannot release a newer one.
+- **A release is durable.** The status commits first and `orders.released_at` is set after the release succeeds. The orchestrator's sweeper retries every `CANCELLED`/`REFUNDED` order with `released_at IS NULL`, so a crash or a Redis outage delays a release but cannot lose it. Until then the unit stays held and the user gets 409.
+- **Result messages have derived ids** (`<orderId>:<type>`), so a redelivered request produces a result that `processed_messages` dedupes.
 - After a release, the user may try again while the sale is ACTIVE and stock remains. This is an explicit product decision: a failed payment should not lock someone out.
-- **Payment timeout:** if an order stays in `PAYMENT_PENDING` longer than `PAYMENT_TIMEOUT_MS` (default 60 s), a sweeper in the orchestrator cancels it and releases the stock. A late `payment.succeeded` on a cancelled order triggers a refund.
+- **Payment timeout:** if an order stays in `PAYMENT_PENDING` longer than `PAYMENT_TIMEOUT_MS` (default 60 s), a sweeper in the orchestrator cancels it and releases the stock. A late `payment.succeeded` on a cancelled order records the charge reference and triggers a refund; `payment.refunded` then moves the order to `REFUNDED`.
 
 ---
 
@@ -142,6 +146,7 @@ stateDiagram-v2
 | `sale:{id}:meta`         | Hash         | `startsAt`, `endsAt` (epoch ms), `totalStock`    |
 | `sale:{id}:stock`        | String (int) | Remaining units                                  |
 | `sale:{id}:buyers`       | Set          | `userId`s holding an active reservation or order |
+| `sale:{id}:holders`      | Hash         | `userId` → the `reservationId` holding their unit |
 | `sale:{id}:reservations` | Stream       | `{ reservationId, userId, ts }`, the outbox      |
 
 All keys for a sale share the `{id}` hash tag, so they live in one slot if Redis Cluster is used later.
@@ -149,7 +154,7 @@ All keys for a sale share the `{id}` hash tag, so they live in one slot if Redis
 ### 5.2 Reserve script (`reserve.lua`)
 
 ```lua
--- KEYS: meta, stock, buyers, stream   ARGV: userId, reservationId
+-- KEYS: meta, stock, buyers, stream, holders   ARGV: userId, reservationId
 local t = redis.call('TIME'); local now = t[1]*1000 + math.floor(t[2]/1000)
 local startsAt = tonumber(redis.call('HGET', KEYS[1], 'startsAt'))
 local endsAt   = tonumber(redis.call('HGET', KEYS[1], 'endsAt'))
@@ -160,6 +165,7 @@ if redis.call('SISMEMBER', KEYS[3], ARGV[1]) == 1 then return {'ALREADY_PURCHASE
 if tonumber(redis.call('GET', KEYS[2])) <= 0 then return {'SOLD_OUT'} end
 redis.call('DECR', KEYS[2])
 redis.call('SADD', KEYS[3], ARGV[1])
+redis.call('HSET', KEYS[5], ARGV[1], ARGV[2])
 redis.call('XADD', KEYS[4], '*', 'reservationId', ARGV[2], 'userId', ARGV[1], 'ts', now)
 return {'RESERVED', ARGV[2]}
 ```
@@ -186,6 +192,7 @@ CREATE TABLE orders (
   payment_ref     TEXT,
   shipment_ref    TEXT,
   failure_reason  TEXT,
+  released_at     TIMESTAMPTZ,               -- unit confirmed back in Redis
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -210,7 +217,9 @@ CREATE TABLE processed_messages (        -- consumer-side idempotency
 ```
 
 **Invariant (checked in tests and by `/admin/reconcile`):**
-`redis stock + count(orders live) + count(stream entries not yet persisted) = total_stock`
+`redis stock + count(orders live) + count(dead orders still holding their unit) + count(stream entries with no order that still hold a unit) = total_stock`
+
+Redis is read atomically and Postgres in one statement, and the read repeats if Redis changed in between, so in-flight work is not reported as drift. A reservation refused by the partial unique index stays in the stream, but its unit has been returned, so it does not count.
 
 ---
 
@@ -265,7 +274,7 @@ Reads Postgres first, then falls back to Redis, because a reservation can exist 
 - `GET /healthz` (liveness) and `GET /readyz` (Redis + PG reachable).
 - `POST /admin/sale` (dev only, guarded by `ADMIN_TOKEN`; not registered when `ADMIN_TOKEN` is unset): create or reset a sale. Seeds Postgres, then Redis, clearing the buyers set and stream while keeping the stream's consumer groups. Returns 409 `SALE_HAS_ORDERS` while the sale has live reservations or active orders.
 - Startup seeding from `SALE_*` only creates a missing sale. It never overwrites an existing sale or re-initialises Redis stock for one; if that stock is missing, the sale stays unavailable until reset or the Redis rebuild job runs.
-- `GET /admin/reconcile`: checks the stock invariant from §5.3 and reports any drift.
+- `GET /admin/reconcile`: checks the stock invariant from §5.3 and reports any drift: 200 when it holds, 409 on drift, 503 with `Retry-After` and `settled: false` when traffic never paused long enough for a consistent read.
 - `GET /metrics`: Prometheus format (request rate, latency histogram, reserve outcomes, queue lag).
 
 ---

@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { OrderStatus } from './purchase.js';
 import {
   ORDER_TRANSITIONS,
+  SAGA_RESULT_EVENT_TYPES,
   isSagaEnvelope,
   makeEnvelope,
+  makeResultEnvelope,
   nextAction,
   transitionTarget,
   type SagaEvent,
@@ -86,10 +88,20 @@ describe('order state machine', () => {
     expect(releases(steps)).toEqual(['PAYMENT_DECLINED']);
   });
 
-  it('refunds a late payment success after cancellation', () => {
-    const steps = nextAction({ status: 'CANCELLED' }, { type: 'payment.succeeded' });
-    expect(transitionSteps(steps)).toEqual([]);
+  it('records the charge and refunds a late payment success after cancellation', () => {
+    const steps = nextAction(
+      { status: 'CANCELLED' },
+      { type: 'payment.succeeded', payload: { paymentRef: 'pay_late' } },
+    );
+    expect(transitionSteps(steps)).toEqual([['CANCELLED', 'CANCELLED']]);
+    expect(steps[0]).toMatchObject({ patch: { paymentRef: 'pay_late' } });
     expect(published(steps)).toEqual(['payment.refund_requested']);
+  });
+
+  it('closes a cancelled order when its late charge is refunded', () => {
+    const steps = nextAction({ status: 'CANCELLED' }, { type: 'payment.refunded' });
+    expect(transitionSteps(steps)).toEqual([['CANCELLED', 'REFUNDED']]);
+    expect(releases(steps)).toEqual(['REFUNDED']);
   });
 
   it('completes an order when shipping succeeds', () => {
@@ -141,7 +153,23 @@ describe('order state machine', () => {
     expect(transitionTarget('SHIPPING_PENDING', 'shipping.failed')).toBe('SHIPPING_FAILED');
     expect(transitionTarget('SHIPPING_FAILED', 'payment.refunded')).toBe('REFUNDED');
     expect(transitionTarget('COMPLETED', 'payment.succeeded')).toBeUndefined();
-    expect(ORDER_TRANSITIONS.CANCELLED).toEqual({});
+    expect(ORDER_TRANSITIONS.COMPLETED).toEqual({});
+    expect(ORDER_TRANSITIONS.REFUNDED).toEqual({});
+  });
+
+  it('only plans transitions the table allows', () => {
+    const events = [
+      ...SAGA_RESULT_EVENT_TYPES,
+      'reservation.persisted',
+      'payment.timeout',
+    ] as const;
+    for (const status of Object.keys(ORDER_TRANSITIONS) as OrderStatus[]) {
+      for (const type of events) {
+        for (const [from, to] of transitionSteps(nextAction({ status }, { type }))) {
+          expect(transitionTarget(from, type)).toBe(to);
+        }
+      }
+    }
   });
 });
 
@@ -156,6 +184,15 @@ describe('saga envelopes', () => {
       payload: { saleId: 'sale-1' },
     });
     expect(Number.isNaN(Date.parse(envelope.occurredAt))).toBe(false);
+  });
+
+  it('gives a redelivered result the same message id', () => {
+    const first = makeResultEnvelope('order-1', 'payment.failed', { reason: 'DECLINED' });
+    const second = makeResultEnvelope('order-1', 'payment.failed', { reason: 'DECLINED' });
+    expect(isSagaEnvelope(first)).toBe(true);
+    expect(second.messageId).toBe(first.messageId);
+    expect(makeResultEnvelope('order-1', 'payment.refunded').messageId).not.toBe(first.messageId);
+    expect(makeResultEnvelope('order-2', 'payment.failed').messageId).not.toBe(first.messageId);
   });
 
   it('rejects malformed envelopes', () => {

@@ -1,4 +1,4 @@
-import type { OrderStatus } from '@fss/core';
+import { nextAction, type OrderStatus } from '@fss/core';
 import type { Pool, PoolClient } from 'pg';
 
 /** Consumer names recorded in `processed_messages`. */
@@ -219,7 +219,7 @@ export async function markMessageProcessed(
   );
 }
 
-export interface TimedOutOrder {
+export interface OrderRef {
   id: string;
   saleId: string;
   userId: string;
@@ -228,13 +228,23 @@ export interface TimedOutOrder {
 /**
  * Cancels PAYMENT_PENDING orders older than `timeoutMs` and records the event.
  * `FOR UPDATE SKIP LOCKED` lets several orchestrator replicas sweep at once
- * without fighting over the same rows (SPEC §4.2).
+ * without fighting over the same rows (SPEC §4.2). The state machine decides the
+ * transition. Returning the unit is left to `findUnreleasedOrders`, so a crash
+ * right after this commit cannot lose the release.
  */
 export async function cancelTimedOutPayments(
   pool: Pool,
   timeoutMs: number,
   limit = 100,
-): Promise<TimedOutOrder[]> {
+): Promise<OrderRef[]> {
+  const step = nextAction({ status: 'PAYMENT_PENDING' }, { type: 'payment.timeout' }).find(
+    (candidate) => candidate.kind === 'transition',
+  );
+  if (step?.kind !== 'transition') {
+    throw new Error('The state machine has no transition for payment.timeout');
+  }
+  const reason = step.patch?.failureReason ?? null;
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -258,21 +268,21 @@ export async function cancelTimedOutPayments(
     const ids = expired.rows.map((row) => row.id);
     const updated = await client.query<{ id: string; sale_id: string; user_id: string }>(
       `UPDATE orders
-          SET status = 'CANCELLED',
-              failure_reason = 'PAYMENT_TIMEOUT',
+          SET status = $2,
+              failure_reason = $3,
               updated_at = now()
-        WHERE id = ANY($1::uuid[]) AND status = 'PAYMENT_PENDING'
+        WHERE id = ANY($1::uuid[]) AND status = $4
         RETURNING id, sale_id, user_id`,
-      [ids],
+      [ids, step.to, reason, step.from],
     );
 
     if (updated.rows.length > 0) {
       const cancelled = updated.rows.map((row) => row.id);
       await client.query(
         `INSERT INTO saga_events (order_id, type, payload)
-         SELECT id, 'order.cancelled', '{"reason":"PAYMENT_TIMEOUT"}'::jsonb
+         SELECT id, $2, $3::jsonb
            FROM unnest($1::uuid[]) AS id`,
-        [cancelled],
+        [cancelled, step.type, JSON.stringify({ reason })],
       );
     }
 
@@ -288,6 +298,26 @@ export async function cancelTimedOutPayments(
   } finally {
     client.release();
   }
+}
+
+/** CANCELLED/REFUNDED orders whose unit has not been confirmed back in Redis. */
+export async function findUnreleasedOrders(pool: Pool, limit = 100): Promise<OrderRef[]> {
+  const result = await pool.query<{ id: string; sale_id: string; user_id: string }>(
+    `SELECT id, sale_id, user_id
+       FROM orders
+      WHERE status IN ('CANCELLED', 'REFUNDED') AND released_at IS NULL
+      ORDER BY updated_at
+      LIMIT $1`,
+    [limit],
+  );
+  return result.rows.map((row) => ({ id: row.id, saleId: row.sale_id, userId: row.user_id }));
+}
+
+/** Records that the order's unit is back in Redis. */
+export async function markOrderReleased(pool: Pool, orderId: string): Promise<void> {
+  await pool.query('UPDATE orders SET released_at = now() WHERE id = $1 AND released_at IS NULL', [
+    orderId,
+  ]);
 }
 
 /** Most recent order for a user, used by `GET /api/purchases/:userId`. */

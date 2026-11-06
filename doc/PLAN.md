@@ -196,6 +196,56 @@ pnpm stack:down
 
 **Verify:** with `PAYMENT_FAILURE_RATE=1`, a purchase ends CANCELLED, stock is back to N, and the same user can buy again. With `0`, it reaches COMPLETED. The Floci UI shows the DLQs empty. `/admin/reconcile` reports no drift.
 
+### How to test Phase 3
+
+Automated checks. `test:int` needs Podman running and takes about 70 s:
+
+```bash
+pnpm build && pnpm lint
+pnpm test       # state machine (every planned move is in the table), result ids, mock outcomes
+pnpm test:int   # saga.int: failure rates 0 and 1, stale events, sweeper race, lost releases;
+                # reservation.int: stale release is a no-op; broker.int: Floci contract
+```
+
+Manual checks against the stack. Failure rates are fixed at startup, so each scenario gets a fresh stack. Run `pnpm stack:down` first: `stack:up` over a running stack recreates the API containers and nginx then returns 502.
+
+```bash
+. ./.envrc
+T='x-admin-token: dev-admin-token'; J='content-type: application/json'
+C='docker compose -f infra/docker-compose.yml'
+fresh() { pnpm stack:down; env "$@" pnpm stack:up
+  curl -s -X POST localhost:8080/admin/sale -H "$T" -H "$J" -d "{\"startsAt\":\"$(date -u -d '-1 min' +%FT%TZ)\",\"endsAt\":\"$(date -u -d '+10 min' +%FT%TZ)\",\"totalStock\":3}"; }
+buy() { curl -s -w ' %{http_code}\n' -X POST localhost:8080/api/purchases -H "$J" -d "{\"userId\":\"$1\"}"; }
+order() { curl -s localhost:8080/api/purchases/$1; echo; }
+reconcile() { curl -s -w ' %{http_code}\n' localhost:8080/admin/reconcile -H "$T"; }
+orders() { $C exec -T postgres psql -U flash flash -c \
+  "SELECT status, payment_ref, failure_reason, released_at IS NOT NULL AS released FROM orders ORDER BY created_at"; }
+```
+
+| Scenario | Commands | Expected |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Happy path | `fresh PAYMENT_FAILURE_RATE=0 SHIPPING_FAILURE_RATE=0; buy alice; sleep 3; order alice; reconcile; pnpm e2e` | `COMPLETED`, `stock: 2`, reconcile 200 with `ok: true`, e2e `PASS` |
+| Payment declined | `fresh PAYMENT_FAILURE_RATE=1; buy bob; sleep 3; order bob; reconcile; buy bob` | `CANCELLED` with `PAYMENT_DECLINED`, `stock: 3`, and the second buy is 202 with a new order id |
+| Shipping failed | `fresh SHIPPING_FAILURE_RATE=1; buy carol; sleep 3; order carol; orders; reconcile` | `REFUNDED` with `SHIPPING_UNAVAILABLE`, `payment_ref` set, `released` true, `stock: 3` |
+| Timeout, then late charge | `fresh PAYMENT_TIMEOUT_MS=1000 PAYMENT_LATENCY_MS=8000; buy dave; sleep 7; order dave; reconcile; sleep 6; orders` | First `CANCELLED` with `PAYMENT_TIMEOUT`, `stock: 3`. Then `REFUNDED`, with `payment_ref` set and the reason still `PAYMENT_TIMEOUT` |
+| Redis down during a release | `fresh PAYMENT_TIMEOUT_MS=1000 PAYMENT_LATENCY_MS=20000; buy erin; $C stop redis; sleep 8; orders; $C start redis; sleep 9; orders; reconcile` | First `CANCELLED` with `released` false. After Redis returns, `released` true, `stock: 3`, reconcile `ok: true` |
+
+Stress. `verify.ts` uses the same check as `/admin/reconcile`, and waits for reservations and releases to drain:
+
+```bash
+pnpm stack:down; pnpm stack:up             # failure rates default to 0
+pnpm stress -- spike                       # exits 0, verify PASS
+
+pnpm stack:down; PAYMENT_FAILURE_RATE=0.3 SHIPPING_FAILURE_RATE=0.1 pnpm stack:up
+pnpm stress -- spike                       # verify PASS, but exits 99 (see below)
+pnpm stress -- same-user                   # exits 0, verify PASS
+pnpm stack:down
+```
+
+With failure rates above 0, compensation returns units during the run, so more than 1,000 buyers can reserve. That crosses the spike's exact-count thresholds (`spike_reserved`, `spike_sold_out`) and k6 exits 99. This is expected: judge that run by the `verify` line.
+
+The stale-event, sweeper-race and failed-conflict-release cases need precise timing, so they are only covered in `tests/saga.int.test.ts`.
+
 ---
 
 ## Phase 4: Resilience (SPEC §9.3)
@@ -203,7 +253,7 @@ pnpm stack:down
 - [ ] Orchestrator: `XAUTOCLAIM` of pending entries idle for more than 30 s, and graceful shutdown (stop reading, finish in-flight work, exit).
 - [ ] API: fail closed with 503 + `Retry-After` when Redis is down. Graceful shutdown via Fastify `close()`.
 - [ ] PG outage: orchestrator retries with exponential backoff + jitter, status endpoint falls back to Redis.
-- [ ] Redis rebuild job (`pnpm rebuild-redis`): recompute stock and buyers from PG live orders + unconsumed stream entries.
+- [ ] Redis rebuild job (`pnpm rebuild-redis`): recompute stock, buyers and holders from PG live orders + unconsumed stream entries.
 - [ ] `GET /admin/reconcile`: check the invariant from SPEC §5.3.
 - [ ] Tests: orchestrator crash mid-message → exactly-once persistence. Redis down → 503, no 500s.
 
