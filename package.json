@@ -18,7 +18,8 @@
     "stress": ". ./.envrc && tsx scripts/stress.ts",
     "chaos": "bash stress/chaos.sh",
     "rebuild-redis": "tsx scripts/rebuild-redis.ts",
-    "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev"
+    "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev",
+    "knip": "knip"
   },
   "devDependencies": {
     "@aws-sdk/client-sqs": "3.1162.0",
@@ -32,6 +33,7 @@
     "@types/pg": "8.23.1",
     "eslint": "10.14.0",
     "globals": "17.14.0",
+    "knip": "^6.44.1",
     "prettier": "3.9.10",
     "testcontainers": "12.2.1",
     "tsx": "4.23.15",
