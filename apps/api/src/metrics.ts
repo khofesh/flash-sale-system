@@ -1,3 +1,5 @@
+import { constants, PerformanceObserver, type PerformanceEntry } from 'node:perf_hooks';
+import { getHeapStatistics } from 'node:v8';
 import {
   Counter,
   Gauge,
@@ -29,6 +31,20 @@ export interface AppMetrics {
 export function createAppMetrics(): AppMetrics {
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
+
+  // Used heap swings by tens of MB between major collections, so only a reading
+  // taken right after one approximates what survives GC.
+  const heapAfterMajorGc = new Gauge({
+    name: 'heap_used_after_major_gc_bytes',
+    help: 'Used V8 heap measured right after the latest major GC',
+    registers: [registry],
+  });
+  new PerformanceObserver((list) => {
+    const isMajor = (entry: PerformanceEntry) =>
+      (entry as PerformanceEntry & { detail?: { kind?: number } }).detail?.kind ===
+      constants.NODE_PERFORMANCE_GC_MAJOR;
+    if (list.getEntries().some(isMajor)) heapAfterMajorGc.set(getHeapStatistics().used_heap_size);
+  }).observe({ entryTypes: ['gc'] });
 
   const httpRequests = new Counter({
     name: 'http_requests_total',

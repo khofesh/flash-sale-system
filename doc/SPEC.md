@@ -430,7 +430,7 @@ Tooling: pnpm workspaces, TypeScript (strict), ESLint and Prettier, Vitest, Test
 | **Chaos**           | Spike plus `docker kill` of one API replica and one orchestrator mid-run | No oversell; all reservations eventually persisted      |
 
 After every run, `stress/verify.ts` queries Postgres and Redis and asserts:
-`live orders ≤ totalStock`, `count(distinct user_id) = count(live orders)`, the §5.3 invariant holds, and the DLQ is empty. k6 summary JSON plus the verification output are saved to `stress/results/`, and the README explains how to read them.
+`live orders ≤ totalStock`, `count(distinct user_id) = count(live orders)`, the §5.3 invariant holds, and the DLQ is empty. k6 summary JSON plus the verification output are saved to the git-ignored `stress/results/`, and `stress/README.md` explains how to read them.
 
 ---
 

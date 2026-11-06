@@ -1,2 +1,0 @@
-verify launch-2026: total=100 stock=50 live=50 buyers=50 unpersisted=0 pendingReleases=0
-PASS — no oversell, one live order per user, invariant holds, DLQs empty

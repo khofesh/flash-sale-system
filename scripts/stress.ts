@@ -188,8 +188,8 @@ interface Sample {
   at: string;
   /** Resident memory per API replica, keyed by the upstream nginx reports. */
   rssBytes: Record<string, number>;
-  /** Used V8 heap per API replica. Its low points approximate what survives GC. */
-  heapUsedBytes: Record<string, number>;
+  /** Used V8 heap per API replica, as of its latest major GC. */
+  heapAfterGcBytes: Record<string, number>;
   /** Highest backlog any replica reported for the orchestrator group. */
   streamLag: number | null;
 }
@@ -202,7 +202,7 @@ async function takeSample(): Promise<void> {
   const sample: Sample = {
     at: new Date().toISOString(),
     rssBytes: {},
-    heapUsedBytes: {},
+    heapAfterGcBytes: {},
     streamLag: null,
   };
 
@@ -214,8 +214,8 @@ async function takeSample(): Promise<void> {
       const upstream = response.headers.get('x-upstream') ?? 'unknown';
       const rss = /^process_resident_memory_bytes (\S+)$/m.exec(body)?.[1];
       if (rss) sample.rssBytes[upstream] = Number(rss);
-      const heap = /^nodejs_heap_size_used_bytes (\S+)$/m.exec(body)?.[1];
-      if (heap) sample.heapUsedBytes[upstream] = Number(heap);
+      const heap = /^heap_used_after_major_gc_bytes (\S+)$/m.exec(body)?.[1];
+      if (heap) sample.heapAfterGcBytes[upstream] = Number(heap);
       const lag = /^reservation_stream_lag_entries\{[^}]*\} (\S+)$/m.exec(body)?.[1];
       if (lag) sample.streamLag = Math.max(sample.streamLag ?? 0, Number(lag));
     } catch {
@@ -257,31 +257,34 @@ function checkSoak(): string[] {
   }
 
   const warmedUp = samples.slice(Math.floor(samples.length / 5));
-  const third = Math.floor(warmedUp.length / 3);
-  if (third === 0) {
+  const replicas = new Set(warmedUp.flatMap((sample) => Object.keys(sample.heapAfterGcBytes)));
+  if (replicas.size === 0) {
     failures.push('too few /metrics samples to judge memory growth');
     return failures;
   }
 
-  const replicas = new Set(warmedUp.flatMap((sample) => Object.keys(sample.heapUsedBytes)));
   for (const replica of replicas) {
-    const floor = (window: Sample[]) => {
-      const values = window.flatMap((sample) => sample.heapUsedBytes[replica] ?? []);
-      return values.length > 0 ? Math.min(...values) : undefined;
-    };
-    const start = floor(warmedUp.slice(0, third));
-    const end = floor(warmedUp.slice(-third));
-    if (start === undefined || end === undefined) continue;
+    const readings = warmedUp.flatMap((sample) => sample.heapAfterGcBytes[replica] ?? []);
+    // The leading readings may predate the load, until the first major GC during it.
+    const fresh = readings.slice(readings.findIndex((value) => value !== readings[0]));
+    const third = Math.floor(fresh.length / 3);
+    if (fresh.length === readings.length || third === 0) {
+      failures.push(`${replica} had too few major GCs to judge memory growth`);
+      continue;
+    }
 
+    const start = Math.min(...fresh.slice(0, third));
+    const end = Math.min(...fresh.slice(-third));
     const growth = (end - start) / start;
     const rss = warmedUp.flatMap((sample) => sample.rssBytes[replica] ?? []);
     // RSS is reported but not judged: V8 grows it in steps and rarely gives it back,
     // so a rising RSS alone cannot tell a larger heap from a leak.
     console.log(
-      `memory ${replica}: heap floor ${toMb(start)} MB -> ${toMb(end)} MB ` +
+      `memory ${replica}: heap after major GC ${toMb(start)} MB -> ${toMb(end)} MB ` +
         `(${(growth * 100).toFixed(1)}%), rss ${toMb(rss[0] ?? 0)} MB -> ${toMb(rss.at(-1) ?? 0)} MB`,
     );
-    if (growth > 0.25) failures.push(`${replica} heap floor grew ${(growth * 100).toFixed(1)}%`);
+    if (growth > 0.25)
+      failures.push(`${replica} heap after major GC grew ${(growth * 100).toFixed(1)}%`);
   }
   return failures;
 }

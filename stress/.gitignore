@@ -1,2 +1,2 @@
-# Temporary file; scripts/stress.ts renames it into a timestamped result.
-results/k6-summary.json
+# Written by scripts/stress.ts on every run; not kept in the repo.
+results/

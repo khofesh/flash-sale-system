@@ -1,6 +1,7 @@
 # Stress results
 
-`pnpm stress <scenario>` writes three files per run, named by the UTC start time:
+`pnpm stress <scenario>` writes three files per run to `stress/results/`, which is
+git-ignored and created on demand, named by the UTC start time:
 
 - `<stamp>-<scenario>-k6.json` — the k6 summary export: throughput, latency
   percentiles, failed-request rate and the custom counters.
@@ -25,7 +26,9 @@ Redis, so this number says little about reserve throughput on its own.
 k6 arrives from one address, warms it up, and restores the default limit afterwards.
 
 The soak fails if p99 late in the run exceeds twice the early p99 (with a 5 ms floor),
-or if a replica's used-heap low point grows more than 25%. RSS is printed but not
+or if a replica's used heap right after a major GC (`heap_used_after_major_gc_bytes`)
+grows more than 25%. Plain used heap is a sawtooth with a period over a minute, so its
+low point in a short window mostly shows whether a major GC happened to land there. RSS is printed but not
 judged: V8 grows it in steps and rarely returns it, so it cannot separate a larger
 heap from a leak. `DURATION=12m pnpm stress soak` runs longer; the sale window closes
 after 15 minutes. `/metrics` also exposes `reservation_stream_lag_entries`,

@@ -292,7 +292,7 @@ pnpm stack:down
 - [x] `Cache-Control` on `GET /api/sale`. Tune Redis and pg pool sizes.
 - [x] `/metrics` (`@prometheus-io/client`, the successor to the deprecated `prom-client`): request rate and latency histogram, reserve outcomes, stream lag, DLQ depth.
 - [x] `stress/soak.js` (2k req/s × 5 min).
-- [x] Record results in `stress/results/` (k6 summary JSON + verify output).
+- [x] Record results below; each run writes its k6 summary JSON and verify output to the git-ignored `stress/results/`.
 
 **Verify:** spike meets the SPEC §9.1 targets (≥ 5k req/s, p99 < 50 ms, 0 oversell). Soak keeps latency flat with no memory growth.
 
