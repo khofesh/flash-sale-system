@@ -20,7 +20,7 @@ import {
   type Redis,
   type ReservationStore,
 } from '@fss/infra';
-import type { AppMetrics } from './metrics.js';
+import type { AppMetrics } from './metrics.ts';
 
 export interface PurchaseRouteDeps {
   redis: Redis;

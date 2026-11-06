@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import type { Logger } from './logger.js';
+import type { Logger } from './logger.ts';
 
 export type { Pool } from 'pg';
 

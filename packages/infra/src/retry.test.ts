@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { backoffDelay, retry } from './retry.js';
+import { backoffDelay, retry } from './retry.ts';
 
 describe('backoffDelay', () => {
   it('doubles per attempt up to the cap', () => {

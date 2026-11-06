@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deterministicFailure, mockReference } from './mockProvider.js';
+import { deterministicFailure, mockReference } from './mockProvider.ts';
 
 describe('deterministicFailure', () => {
   it('honours the extremes and treats an invalid rate as zero', () => {

@@ -14,8 +14,8 @@ import {
   type ReservationStore,
   type SaleSnapshot,
 } from '@fss/infra';
-import type { AppMetrics } from './metrics.js';
-import { registerPurchaseRoutes } from './purchases.js';
+import type { AppMetrics } from './metrics.ts';
+import { registerPurchaseRoutes } from './purchases.ts';
 
 interface BuildAppDeps {
   redis: Redis;

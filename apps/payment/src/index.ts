@@ -1,6 +1,6 @@
 import { loadConfig } from '@fss/config';
 import { onShutdown, createLogger, createSqsClient, SqsBus } from '@fss/infra';
-import { startPayment } from './worker.js';
+import { startPayment } from './worker.ts';
 
 const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'payment' : config.SERVICE_NAME;

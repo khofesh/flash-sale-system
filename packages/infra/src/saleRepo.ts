@@ -1,6 +1,6 @@
 import type { ChainableCommander } from 'ioredis';
 import type { Pool } from 'pg';
-import type { Redis } from './redis.js';
+import type { Redis } from './redis.ts';
 
 /** Largest value a Postgres INTEGER column (`sales.total_stock`) can hold. */
 export const MAX_TOTAL_STOCK = 2_147_483_647;

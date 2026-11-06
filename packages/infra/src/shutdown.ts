@@ -1,4 +1,4 @@
-import type { Logger } from './logger.js';
+import type { Logger } from './logger.ts';
 
 export function onShutdown(logger: Logger, cleanup: () => Promise<void>, timeoutMs = 10_000): void {
   let shuttingDown = false;

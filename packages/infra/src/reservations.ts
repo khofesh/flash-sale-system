@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { parseReserveReply, type ReserveResult } from '@fss/core';
-import type { Logger } from './logger.js';
-import type { Redis } from './redis.js';
-import { saleRedisKeys } from './saleRepo.js';
+import type { Logger } from './logger.ts';
+import type { Redis } from './redis.ts';
+import { saleRedisKeys } from './saleRepo.ts';
 
 const reserveSource = readFileSync(new URL('./redis/reserve.lua', import.meta.url), 'utf8');
 const releaseSource = readFileSync(new URL('./redis/release.lua', import.meta.url), 'utf8');

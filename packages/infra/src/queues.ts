@@ -5,7 +5,7 @@ import {
   SetQueueAttributesCommand,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
-import type { QueueName } from './bus/types.js';
+import type { QueueName } from './bus/types.ts';
 
 interface QueueDefinition {
   name: QueueName;

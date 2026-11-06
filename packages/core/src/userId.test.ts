@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeUserId } from './userId.js';
+import { normalizeUserId } from './userId.ts';
 
 describe('normalizeUserId', () => {
   it('trims and lowercases a valid id', () => {

@@ -1,6 +1,6 @@
 import { loadConfig } from '@fss/config';
 import { onShutdown, createLogger, createSqsClient, SqsBus } from '@fss/infra';
-import { startShipping } from './worker.js';
+import { startShipping } from './worker.ts';
 
 const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'shipping' : config.SERVICE_NAME;

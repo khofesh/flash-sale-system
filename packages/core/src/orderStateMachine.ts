@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { OrderStatus } from './purchase.js';
+import type { OrderStatus } from './purchase.ts';
 
 /** Every message that can travel between saga participants (SPEC §7). */
 const SAGA_MESSAGE_TYPES = [
