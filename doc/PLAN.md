@@ -287,14 +287,41 @@ pnpm stack:down
 
 ## Phase 5: Throughput hardening (SPEC §9.1, §9.2)
 
-- [ ] nginx `limit_req` per IP (`RATE_LIMIT_RPS`) → 429 JSON. API replicas ×4, orchestrator ×2, payment ×2.
-- [ ] Per-replica sold-out short-circuit flag (re-checked every 1 s).
-- [ ] `Cache-Control` on `GET /api/sale`. Tune Redis and pg pool sizes.
-- [ ] `/metrics` (prom-client): request rate and latency histogram, reserve outcomes, stream lag, DLQ depth.
-- [ ] `stress/soak.js` (2k req/s × 5 min).
-- [ ] Record results in `stress/results/` (k6 summary JSON + verify output).
+- [x] nginx `limit_req` per IP (`RATE_LIMIT_RPS`) → 429 JSON. API replicas ×4, orchestrator ×2, payment ×2.
+- [x] Per-replica sold-out short-circuit flag (re-checked every 1 s).
+- [x] `Cache-Control` on `GET /api/sale`. Tune Redis and pg pool sizes.
+- [x] `/metrics` (prom-client): request rate and latency histogram, reserve outcomes, stream lag, DLQ depth.
+- [x] `stress/soak.js` (2k req/s × 5 min).
+- [x] Record results in `stress/results/` (k6 summary JSON + verify output).
 
 **Verify:** spike meets the SPEC §9.1 targets (≥ 5k req/s, p99 < 50 ms, 0 oversell). Soak keeps latency flat with no memory growth.
+
+Measured on an AMD Ryzen 9 5900X (24 threads, 48 GB), rootless Podman, 4 API replicas:
+
+| Run   | Throughput | p95     | p99     | 5xx | Correctness |
+| ----- | ---------- | ------- | ------- | --- | ----------- |
+| Spike | 5,248 req/s | —      | 5.97 ms | 0   | 1,000 reserved, 9,002 sold out, no oversell |
+| Soak  | 1,997 req/s | 0.66 ms | 1.20 ms | 0   | 30,549 orders, invariant holds, DLQs empty |
+
+### How to test Phase 5
+
+```bash
+pnpm build && pnpm lint && pnpm test
+pnpm test:int   # metrics endpoint, sold-out short circuit, Cache-Control
+
+pnpm stack:down && pnpm stack:up
+pnpm stress spike   # 5k+ req/s, p99 < 50 ms, exactly stock reservations, verify PASS
+pnpm stress soak    # 2k req/s for 5 min, flat latency, verify PASS, DLQs empty
+
+# Rate limiting: recreate nginx with a low limit and expect JSON 429s.
+. ./.envrc
+RATE_LIMIT_RPS=5 RATE_LIMIT_BURST=1 docker compose -f infra/docker-compose.yml up -d --force-recreate nginx
+for i in $(seq 1 30); do curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/sale; done | sort | uniq -c
+# 429 bodies are {"code":"RATE_LIMITED"} with Retry-After: 1.
+docker compose -f infra/docker-compose.yml up -d --force-recreate nginx   # restore the default
+curl -s localhost:8080/metrics | grep -E 'reservation_stream|dlq_depth|reserve_outcomes'
+pnpm stack:down
+```
 
 ---
 

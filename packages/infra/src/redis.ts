@@ -11,15 +11,24 @@ export interface RedisOptions {
    * commands such as XREADGROUP, and commands sent before `redisReady` fail.
    */
   failFast?: boolean;
+  /**
+   * Batches concurrent commands from one connection into a single write. Only
+   * for connections that never issue blocking commands, e.g. the request path.
+   */
+  autoPipelining?: boolean;
 }
 
 export const FAIL_FAST_COMMAND_TIMEOUT_MS = 1_000;
 
-export function createRedis(url: string, { failFast = false }: RedisOptions = {}): Redis {
+export function createRedis(
+  url: string,
+  { failFast = false, autoPipelining = false }: RedisOptions = {},
+): Redis {
   return new Redis(url, {
     maxRetriesPerRequest: 2,
     enableReadyCheck: true,
     lazyConnect: false,
+    enableAutoPipelining: autoPipelining,
     // A server that vanishes sends no FIN. Reconnects instead of waiting on the dead
     // socket; this must stay longer than any XREADGROUP BLOCK.
     socketTimeout: 10_000,

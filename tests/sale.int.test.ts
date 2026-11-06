@@ -129,6 +129,8 @@ describe('/api/sale', () => {
       remainingStock: 3,
       totalStock: 3,
     });
+    // Polling storms are absorbed by the browser/proxy cache (SPEC §9.2).
+    expect(response.headers['cache-control']).toBe('max-age=1');
   });
 
   it('reports SOLD_OUT when the window is open but stock is zero', async () => {

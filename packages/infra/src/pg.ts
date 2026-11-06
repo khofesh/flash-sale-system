@@ -3,10 +3,19 @@ import type { Logger } from './logger.js';
 
 export type { Pool, PoolClient } from 'pg';
 
-export function createPgPool(connectionString: string, logger?: Logger): Pool {
+export interface PgPoolOptions {
+  /** Connections this process may open. Defaults to 10. */
+  max?: number;
+}
+
+export function createPgPool(
+  connectionString: string,
+  logger?: Logger,
+  options: PgPoolOptions = {},
+): Pool {
   const pool = new Pool({
     connectionString,
-    max: 10,
+    max: options.max ?? 10,
     idleTimeoutMillis: 30_000,
     // A server that vanishes (killed, partitioned) sends no FIN, so a query on its
     // socket would otherwise wait for minutes, hanging whichever loop issued it.

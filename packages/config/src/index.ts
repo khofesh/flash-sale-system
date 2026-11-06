@@ -10,6 +10,8 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
   DATABASE_URL: z.string().min(1).default('postgres://flash:flash@localhost:5432/flash'),
+  /** Connections per process. Four API replicas x 20 plus workers stay under Postgres' 200. */
+  PG_POOL_MAX: z.coerce.number().int().positive().default(20),
   SQS_ENDPOINT: z.url().default('http://localhost:4566'),
   AWS_REGION: z.string().min(1).default('us-east-1'),
   AWS_ACCESS_KEY_ID: z.string().min(1).default('test'),
@@ -17,8 +19,10 @@ const schema = z.object({
   PAYMENT_LATENCY_MS: z.coerce.number().int().nonnegative().default(200),
   PAYMENT_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0.1),
   PAYMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  PAYMENT_CONCURRENCY: z.coerce.number().int().positive().default(10),
   SHIPPING_LATENCY_MS: z.coerce.number().int().nonnegative().default(100),
   SHIPPING_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0.02),
+  SHIPPING_CONCURRENCY: z.coerce.number().int().positive().default(5),
   SALE_ID: z.string().min(1).default('launch-2026'),
   SALE_PRODUCT_ID: z.string().min(1).default('flash-tshirt'),
   SALE_STARTS_AT: optionalDate(),
@@ -27,6 +31,8 @@ const schema = z.object({
   // No default: admin routes are only enabled when a token is set explicitly.
   ADMIN_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
   MIGRATIONS_DIR: z.string().min(1).optional(),
+  /** How long an API replica trusts its in-memory sold-out flag (SPEC §9.2). */
+  SOLD_OUT_RECHECK_MS: z.coerce.number().int().nonnegative().default(1_000),
 });
 
 function optionalDate() {

@@ -1,0 +1,92 @@
+import {
+  Counter,
+  Gauge,
+  Histogram,
+  Registry,
+  collectDefaultMetrics,
+  type RegistryContentType,
+} from '@prometheus-io/client';
+
+/** Labels on the HTTP metrics. `route` is the Fastify pattern, not the raw URL. */
+export interface HttpMetricLabels {
+  method: string;
+  route: string;
+  status: string;
+}
+
+export interface AppMetrics {
+  registry: Registry<RegistryContentType>;
+  httpRequests: Counter<'method' | 'route' | 'status'>;
+  httpRequestDuration: Histogram<'method' | 'route' | 'status'>;
+  /** Reserve script outcomes. Requests answered from the sold-out flag are not included. */
+  reserveOutcomes: Counter<'outcome'>;
+  /** Entries the orchestrator group has not delivered yet. */
+  streamLag: Gauge<'group'>;
+  /** Entries delivered to the orchestrator group but not acked. */
+  streamPending: Gauge<'group'>;
+  /** Visible messages per dead-letter queue. */
+  dlqDepth: Gauge<'queue'>;
+}
+
+/**
+ * One registry per process. The API replicas each expose their own, which is
+ * what a Prometheus deployment scrapes; the operational gauges (stream lag and
+ * DLQ depth) are refreshed by the caller before a scrape.
+ */
+export function createAppMetrics(): AppMetrics {
+  const registry = new Registry();
+  collectDefaultMetrics({ register: registry });
+
+  const httpRequests = new Counter({
+    name: 'http_requests_total',
+    help: 'HTTP requests handled, by method, route and status',
+    labelNames: ['method', 'route', 'status'],
+    registers: [registry],
+  });
+
+  const httpRequestDuration = new Histogram({
+    name: 'http_request_duration_seconds',
+    help: 'HTTP request latency in seconds',
+    labelNames: ['method', 'route', 'status'],
+    buckets: [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+    registers: [registry],
+  });
+
+  const reserveOutcomes = new Counter({
+    name: 'reserve_outcomes_total',
+    help: 'Reserve script outcomes',
+    labelNames: ['outcome'],
+    registers: [registry],
+  });
+
+  const streamLag = new Gauge({
+    name: 'reservation_stream_lag_entries',
+    help: 'Reservation stream entries the orchestrator has not read yet',
+    labelNames: ['group'],
+    registers: [registry],
+  });
+
+  const streamPending = new Gauge({
+    name: 'reservation_stream_pending_entries',
+    help: 'Reservation stream entries delivered but not acknowledged',
+    labelNames: ['group'],
+    registers: [registry],
+  });
+
+  const dlqDepth = new Gauge({
+    name: 'dlq_depth',
+    help: 'Messages waiting in each dead-letter queue',
+    labelNames: ['queue'],
+    registers: [registry],
+  });
+
+  return {
+    registry,
+    httpRequests,
+    httpRequestDuration,
+    reserveOutcomes,
+    streamLag,
+    streamPending,
+    dlqDepth,
+  };
+}
