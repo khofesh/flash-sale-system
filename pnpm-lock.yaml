@@ -32,9 +32,6 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
-      '@types/pg':
-        specifier: 8.23.1
-        version: 8.23.1
       eslint:
         specifier: 10.14.0
         version: 10.14.0(jiti@2.7.0)
@@ -42,7 +39,7 @@ importers:
         specifier: 17.14.0
         version: 17.14.0
       knip:
-        specifier: ^6.44.1
+        specifier: 6.44.1
         version: 6.44.1
       prettier:
         specifier: 3.9.10

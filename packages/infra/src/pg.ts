@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import type { Logger } from './logger.js';
 
-export type { Pool, PoolClient } from 'pg';
+export type { Pool } from 'pg';
 
 export interface PgPoolOptions {
   /** Connections this process may open. Defaults to 10. */

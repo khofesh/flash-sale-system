@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { OrderStatus } from './purchase.js';
 
 /** Every message that can travel between saga participants (SPEC §7). */
-export const SAGA_MESSAGE_TYPES = [
+const SAGA_MESSAGE_TYPES = [
   'payment.requested',
   'payment.refund_requested',
   'shipping.requested',
@@ -66,7 +66,7 @@ export interface OrderSnapshot {
   status: OrderStatus;
 }
 
-export interface OrderPatch {
+interface OrderPatch {
   paymentRef?: string;
   shipmentRef?: string;
   failureReason?: string;

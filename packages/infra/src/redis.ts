@@ -18,7 +18,7 @@ export interface RedisOptions {
   autoPipelining?: boolean;
 }
 
-export const FAIL_FAST_COMMAND_TIMEOUT_MS = 1_000;
+const FAIL_FAST_COMMAND_TIMEOUT_MS = 1_000;
 
 export function createRedis(
   url: string,

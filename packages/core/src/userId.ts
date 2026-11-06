@@ -1,7 +1,7 @@
 /** Allowed characters for a userId (SPEC §6.2). */
-export const USER_ID_PATTERN = /^[\w.@+-]+$/;
+const USER_ID_PATTERN = /^[\w.@+-]+$/;
 
-export const USER_ID_MAX_LENGTH = 254;
+const USER_ID_MAX_LENGTH = 254;
 
 export type UserIdResult = { ok: true; value: string } | { ok: false; message: string };
 
