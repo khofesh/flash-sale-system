@@ -436,10 +436,10 @@ After every run, `stress/verify.ts` queries Postgres and Redis and asserts:
 
 ## 13. Deliverables checklist
 
-- [ ] `README.md`: design and trade-offs, the diagram (Mermaid from §3.1 plus an exported PNG), how to run the server, web, tests and stress tests, and a stress results summary.
-- [ ] `docker compose up` brings up the full stack. `pnpm dev` runs the API and web against compose infrastructure.
-- [ ] `pnpm test` (unit), `pnpm test:int` (Testcontainers), `pnpm stress` (k6 + verify).
-- [ ] Architecture diagram in `doc/`.
+- [x] `README.md`: design and trade-offs, the diagram (Mermaid from §3.1 plus an exported PNG), how to run the server, web, tests and stress tests, and a stress results summary.
+- [x] `docker compose up` brings up the full stack. `pnpm dev` runs the API and web against compose infrastructure.
+- [x] `pnpm test` (unit), `pnpm test:int` (Testcontainers), `pnpm stress` (k6 + verify).
+- [x] Architecture diagram in `doc/`.
 
 ---
 

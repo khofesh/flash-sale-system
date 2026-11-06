@@ -335,9 +335,9 @@ pnpm stack:down
 
 ## Phase 6: Deliverables (SPEC §13)
 
-- [ ] `README.md`: overview, architecture diagram (Mermaid + exported PNG in `doc/`), design choices and trade-offs (Redis-first decision, stream as outbox, orchestrated saga, Floci vs LocalStack, AOF durability window), how to run (compose, dev, tests, stress), stress results summary with how to read them.
-- [ ] Clean-clone run-through: `git clone → pnpm i → pnpm stack:up → pnpm e2e → pnpm test:int → pnpm stress`.
-- [ ] Final pass: lint, dead code, consistent error codes, `.env.example` complete.
+- [x] `README.md`: overview, architecture diagram (Mermaid + exported PNG in `doc/`), design choices and trade-offs (Redis-first decision, stream as outbox, orchestrated saga, Floci vs LocalStack, AOF durability window), how to run (compose, dev, tests, stress), stress results summary with how to read them.
+- [x] Clean-clone run-through: `git clone → pnpm i → pnpm stack:up → pnpm e2e → pnpm test:int → pnpm stress`.
+- [x] Final pass: lint, dead code, consistent error codes, `.env.example` complete.
 
 **Verify:** someone else (or a fresh VM) follows only the README and gets the stack running plus green tests and stress.
 

@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph Client
+    W[React SPA<br/>Vite]
+  end
+
+  W -->|HTTP| LB[nginx<br/>load balancer + rate limit]
+  LB --> A1[API replica 1<br/>Fastify]
+  LB --> A2[API replica 2<br/>Fastify]
+  LB --> An[API replica n]
+
+  A1 & A2 & An -->|Lua script<br/>atomic reserve| R[(Redis<br/>stock, buyers set,<br/>reservations stream)]
+  A1 & A2 & An -->|read order status| PG[(Postgres<br/>sales, orders,<br/>saga log)]
+
+  R -->|XREADGROUP| O[Order Orchestrator<br/>worker]
+  O -->|insert / update| PG
+  O -->|payment.requested| Q1[[SQS: payment-requests]]
+  Q1 --> P[Payment service<br/>mock]
+  P -->|payment.result| Q2[[SQS: order-events]]
+  O -->|shipping.requested| Q3[[SQS: shipping-requests]]
+  Q3 --> S[Shipping service<br/>mock]
+  S -->|shipping.result| Q2
+  Q2 --> O
+  O -->|compensate: release| R
+
+  Q1 -. after maxReceiveCount .-> DLQ[[SQS DLQs]]
+  Q2 -.-> DLQ
+  Q3 -.-> DLQ
