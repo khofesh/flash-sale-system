@@ -132,7 +132,7 @@ export function buildApp({
       cached = await recentSale();
     } catch (error) {
       logger.error({ err: error }, 'failed to read sale from redis');
-      return reply.code(503).send({ code: 'UNAVAILABLE' });
+      return reply.code(503).header('Retry-After', '1').send({ code: 'UNAVAILABLE' });
     }
 
     const { sale } = cached;
@@ -267,7 +267,7 @@ export function buildApp({
           return reply.code(report.ok ? 200 : 409).send(report);
         } catch (error) {
           logger.error({ err: error, saleId }, 'reconcile failed');
-          return reply.code(503).send({ code: 'UNAVAILABLE' });
+          return reply.code(503).header('Retry-After', '1').send({ code: 'UNAVAILABLE' });
         }
       },
     });

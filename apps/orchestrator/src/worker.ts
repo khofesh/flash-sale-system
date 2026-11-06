@@ -13,6 +13,8 @@ import {
 import {
   ORDER_EVENTS_CONSUMER,
   RedisReservationStore,
+  SaleStockMissingError,
+  backoffDelay,
   cancelTimedOutPayments,
   findUnreleasedOrders,
   getOrderById,
@@ -20,8 +22,11 @@ import {
   markMessageProcessed,
   markOrderReleased,
   persistReservation,
+  readRedisRunId,
+  rebuildRedis,
   recordSagaEvent,
   resolveMigrationsDir,
+  retry,
   runMigrations,
   saleRedisKeys,
   transition,
@@ -32,6 +37,7 @@ import {
   type Pool,
   type Redis,
   type ReservationStore,
+  type RetryOptions,
   type StopFn,
 } from '@fss/infra';
 
@@ -39,6 +45,25 @@ export const RESERVATIONS_GROUP = 'orchestrator';
 
 /** Replans before leaving a message for redelivery; statuses only move forward. */
 const MAX_PLAN_ATTEMPTS = 5;
+
+/**
+ * Postgres (and broker) failures are retried with backoff before a message is
+ * left for redelivery. Redis holds the reservations, so purchases keep working
+ * while Postgres recovers and the stream buffers the work.
+ */
+function retryOptions(logger: Logger, operation: string): RetryOptions {
+  return {
+    attempts: 6,
+    baseMs: 100,
+    maxMs: 3_000,
+    jitter: 0.3,
+    onRetry: (error, attempt, delayMs) =>
+      logger.warn(
+        { err: error, attempt, delayMs, operation },
+        'operation failed; retrying with backoff',
+      ),
+  };
+}
 
 export interface OrchestratorDeps {
   redis: Redis;
@@ -54,6 +79,8 @@ export interface OrchestratorDeps {
   paymentTimeoutMs?: number;
   /** How often the payment-timeout sweeper runs. */
   sweepIntervalMs?: number;
+  /** How often to check whether Redis restarted and the sale needs a rebuild. */
+  restartCheckMs?: number;
 }
 
 interface ReservationFields {
@@ -77,15 +104,98 @@ export async function startOrchestrator(deps: OrchestratorDeps): Promise<StopFn>
     logger.warn({ err: error }, 'failed to preload reservation scripts');
   });
 
+  const stopGuard = await startRestartGuard(deps);
   const consumer = `${os.hostname()}-${process.pid}`;
   const stopStream = consumeReservations(deps, consumer, reservations);
-  const stopEvents = await deps.bus.subscribe('order-events', (message) =>
-    handleOrderEvent(deps, reservations, message.body),
+  const stopEvents = await deps.bus.subscribe(
+    'order-events',
+    (message) =>
+      retry(
+        () => handleOrderEvent(deps, reservations, message.body),
+        retryOptions(logger, 'order event'),
+      ),
+    { canReceive: orderEventsGate(deps) },
   );
   const stopSweeper = startPaymentSweeper(deps, reservations);
 
   return async () => {
-    await Promise.allSettled([stopStream(), stopEvents(), stopSweeper()]);
+    await Promise.allSettled([stopStream(), stopEvents(), stopSweeper(), stopGuard()]);
+  };
+}
+
+/**
+ * Order events need Postgres and Redis. Without one of them each receive would
+ * fail, and five failed receives send the event to the DLQ: a payment.succeeded
+ * lost that way leaves a charged customer whose order the sweeper then cancels
+ * with no refund. So the events wait in the queue until both are back.
+ */
+function orderEventsGate({ redis, pool, logger }: OrchestratorDeps): () => Promise<boolean> {
+  let paused = false;
+
+  return async () => {
+    let available = redis.status === 'ready';
+    if (available) {
+      try {
+        await pool.query('SELECT 1');
+      } catch {
+        available = false;
+      }
+    }
+
+    if (available === paused) {
+      paused = !available;
+      if (paused) logger.warn('dependencies are down; pausing order events');
+      else logger.info('dependencies are back; resuming order events');
+    }
+    return available;
+  };
+}
+
+/**
+ * A Redis restart can lose up to a second of writes while leaving stock present,
+ * so nothing would fail closed on its own (SPEC §9.3). Redis gets a new `run_id`
+ * on every start, which is how the restart is noticed: the sale is fenced and
+ * rebuilt. Fencing comes first so it stays closed if Postgres is down as well.
+ * A dedicated connection keeps this from queueing behind the blocking stream read.
+ */
+async function startRestartGuard(deps: OrchestratorDeps): Promise<StopFn> {
+  const { logger, pool, saleId } = deps;
+  const intervalMs = deps.restartCheckMs ?? 1_000;
+  const keys = saleRedisKeys(saleId);
+  const redis = deps.redis.duplicate();
+  redis.on('error', (error) => logger.debug({ err: error }, 'restart guard redis error'));
+  let running = true;
+
+  const check = async () => {
+    const runId = await readRedisRunId(redis);
+    const known = await redis.get(keys.redisRunId);
+    if (known === runId) return;
+    if (known === null) {
+      // First start, or the data is gone: no stock means it already fails closed.
+      await redis.set(keys.redisRunId, runId, 'NX');
+      return;
+    }
+
+    logger.warn({ saleId, known, runId }, 'redis restarted; rebuilding the sale');
+    await redis.del(keys.stock);
+    const report = await rebuildRedis(pool, redis, saleId);
+    logger.warn({ ...report }, 'sale rebuilt after a redis restart');
+  };
+
+  const loop = (async () => {
+    while (running) {
+      await sleepWhile(intervalMs, () => running);
+      if (!running) return;
+      await check().catch((error: unknown) => {
+        logger.error({ err: error, saleId }, 'redis restart check failed');
+      });
+    }
+  })();
+
+  return async () => {
+    running = false;
+    await loop;
+    redis.disconnect();
   };
 }
 
@@ -105,12 +215,17 @@ function consumeReservations(
   consumer: string,
   reservations: ReservationStore,
 ): StopFn {
-  const { redis, logger } = deps;
+  const { logger } = deps;
+  // Its own connection: everything sent on a connection queues behind a blocking
+  // XREADGROUP, which would cost each release up to the 2 s block when traffic stops.
+  const redis = deps.redis.duplicate();
+  redis.on('error', (error) => logger.debug({ err: error }, 'stream reader redis error'));
   const stream = saleRedisKeys(deps.saleId).reservations;
   const claimIdleMs = deps.claimIdleMs ?? 30_000;
   const claimIntervalMs = deps.claimIntervalMs ?? 5_000;
   let running = true;
   let lastClaim = 0;
+  let readFailures = 0;
   // XAUTOCLAIM scans the pending list in pages; keep the cursor so entries past
   // the first page are reclaimed too.
   let claimCursor = '0-0';
@@ -119,7 +234,11 @@ function consumeReservations(
     for (const [entryId, rawFields] of entries) {
       if (!running) return;
       try {
-        await handleReservation(deps, reservations, fieldsToObject(rawFields));
+        const fields = fieldsToObject(rawFields);
+        await retry(
+          () => handleReservation(deps, reservations, fields),
+          retryOptions(logger, 'reservation'),
+        );
         await redis.xack(stream, RESERVATIONS_GROUP, entryId);
       } catch (error) {
         if (error instanceof InvalidEntryError) {
@@ -173,19 +292,22 @@ function consumeReservations(
         for (const [, entries] of batches ?? []) {
           await handleEntries(entries);
         }
+        readFailures = 0;
       } catch (error) {
         if (!running) return;
         if (error instanceof Error && error.message.includes('NOGROUP')) {
           // The stream key was deleted (e.g. by hand); recreate the group.
           logger.warn('reservation consumer group is missing; recreating it');
           claimCursor = '0-0';
-          await ensureGroup(redis, deps.saleId).catch((cause: unknown) => {
+          await ensureGroup(deps.redis, deps.saleId).catch((cause: unknown) => {
             logger.error({ err: cause }, 'failed to recreate reservation consumer group');
           });
           continue;
         }
-        logger.error({ err: error }, 'reservation stream read failed');
-        await sleep(1_000);
+        readFailures += 1;
+        const delayMs = backoffDelay(readFailures, { baseMs: 1_000, maxMs: 30_000, jitter: 0.3 });
+        logger.error({ err: error, delayMs }, 'reservation stream read failed');
+        await sleepWhile(delayMs, () => running);
       }
     }
   })();
@@ -193,6 +315,7 @@ function consumeReservations(
   return async () => {
     running = false;
     await loop;
+    redis.disconnect();
   };
 }
 
@@ -354,7 +477,14 @@ async function applySteps(
       }
 
       case 'release': {
-        await releaseOrder(deps, reservations, order, step.reason);
+        try {
+          await releaseOrder(deps, reservations, order, step.reason);
+        } catch (error) {
+          if (!(error instanceof SaleStockMissingError)) throw error;
+          // A rebuild can be a long way off, and redelivering would end in the
+          // DLQ. released_at is still NULL, so the sweeper or the rebuild owns it.
+          logger.warn({ orderId: order.id }, 'sale awaits a rebuild; leaving the release pending');
+        }
         break;
       }
     }
@@ -402,9 +532,12 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
   const timeoutMs = deps.paymentTimeoutMs ?? 60_000;
   const intervalMs = deps.sweepIntervalMs ?? 5_000;
   let running = true;
+  let failures = 0;
 
   const loop = (async () => {
     while (running) {
+      let failed = false;
+
       try {
         const expired = await cancelTimedOutPayments(pool, timeoutMs);
         for (const order of expired) {
@@ -412,21 +545,36 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
         }
       } catch (error) {
         if (!running) return;
+        failed = true;
         logger.error({ err: error }, 'payment timeout sweep failed');
       }
 
       try {
         for (const order of await findUnreleasedOrders(pool)) {
           await releaseOrder(deps, reservations, order, 'SWEEP').catch((error: unknown) => {
+            failed = true;
             logger.error({ err: error, orderId: order.id }, 'failed to release order');
           });
         }
       } catch (error) {
         if (!running) return;
+        failed = true;
         logger.error({ err: error }, 'release sweep failed');
       }
 
-      await sleep(intervalMs);
+      if (failed) {
+        failures += 1;
+        const delayMs = backoffDelay(failures, {
+          baseMs: intervalMs,
+          maxMs: 30_000,
+          jitter: 0.3,
+        });
+        logger.warn({ delayMs, failures }, 'sweeper backing off after a failure');
+        await sleepWhile(delayMs, () => running);
+      } else {
+        failures = 0;
+        await sleepWhile(intervalMs, () => running);
+      }
     }
   })();
 
@@ -434,6 +582,16 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
     running = false;
     await loop;
   };
+}
+
+/** Sleeps in small slices so a shutdown signal does not wait out a long backoff. */
+async function sleepWhile(ms: number, running: () => boolean): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (running()) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await sleep(Math.min(250, remaining));
+  }
 }
 
 function fieldsToObject(raw: string[]): ReservationFields {

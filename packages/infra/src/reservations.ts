@@ -12,11 +12,21 @@ export interface ReservationStore {
   /**
    * Returns the unit held by this reservation. Returns false when it is not the
    * user's current holder: already released, or a stale order after a re-purchase.
+   * Throws `SaleStockMissingError` while the sale awaits a rebuild, so the release
+   * stays pending and is retried.
    */
   release(saleId: string, userId: string, reservationId: string): Promise<boolean>;
   /** The reservation currently holding the user's unit, if any. */
   holder(saleId: string, userId: string): Promise<string | null>;
   isBuyer(saleId: string, userId: string): Promise<boolean>;
+}
+
+/** The sale has no Redis stock key: it is failed closed until a rebuild runs. */
+export class SaleStockMissingError extends Error {
+  constructor(saleId: string) {
+    super(`Sale ${saleId} has no Redis stock; it is awaiting a rebuild`);
+    this.name = 'SaleStockMissingError';
+  }
 }
 
 interface ScriptState {
@@ -63,6 +73,7 @@ export class RedisReservationStore implements ReservationStore {
       [keys.buyers, keys.stock, keys.holders],
       [userId, reservationId],
     );
+    if (Number(reply) === -1) throw new SaleStockMissingError(saleId);
     return Number(reply) === 1;
   }
 

@@ -4,6 +4,8 @@ import {
   createLogger,
   createPgPool,
   createRedis,
+  getSaleSnapshot,
+  redisReady,
   RedisReservationStore,
   seedSale,
 } from '@fss/infra';
@@ -13,8 +15,18 @@ const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'api' : config.SERVICE_NAME;
 const logger = createLogger(service, config.LOG_LEVEL);
 
-const redis = createRedis(config.REDIS_URL);
-const pool = createPgPool(config.DATABASE_URL);
+const redis = createRedis(config.REDIS_URL, { failFast: true });
+redis.on('error', (error) => logger.warn({ err: error }, 'redis connection error'));
+const pool = createPgPool(config.DATABASE_URL, logger);
+
+try {
+  await redisReady(redis);
+} catch (error) {
+  // Exits so the restart policy retries; without Redis no request can be served.
+  logger.error({ err: error }, 'redis is unavailable at startup');
+  await pool.end();
+  process.exit(1);
+}
 
 try {
   const { sale, created, stockMissing } = await seedSale(pool, redis, {
@@ -42,10 +54,16 @@ try {
     );
   }
 } catch (error) {
-  logger.error({ err: error }, 'failed to seed sale');
-  await redis.quit();
-  await pool.end();
-  process.exit(1);
+  // Purchases only need Redis (SPEC §9.3), so a replica restarted during a
+  // Postgres outage can still serve a sale that is already there.
+  const existing = await getSaleSnapshot(redis, config.SALE_ID).catch(() => null);
+  if (!existing) {
+    logger.error({ err: error }, 'failed to seed sale');
+    await redis.quit().catch(() => undefined);
+    await pool.end();
+    process.exit(1);
+  }
+  logger.warn({ err: error, saleId: existing.id }, 'seed failed; serving the sale in redis');
 }
 
 const reservations = new RedisReservationStore(redis, logger);
@@ -67,7 +85,7 @@ const app = buildApp({
 
 onShutdown(logger, async () => {
   await app.close();
-  await redis.quit();
+  await redis.quit().catch(() => undefined);
   await pool.end();
 });
 

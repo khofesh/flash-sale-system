@@ -62,6 +62,7 @@ export async function persistReservation(
   reservation: Reservation,
 ): Promise<PersistOutcome> {
   const client = await pool.connect();
+  let failed = false;
   try {
     await client.query('BEGIN');
 
@@ -102,10 +103,13 @@ export async function persistReservation(
     await client.query('COMMIT');
     return existing.rowCount === 1 ? 'duplicate' : 'conflict';
   } catch (error) {
-    await client.query('ROLLBACK');
+    failed = true;
+    await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   } finally {
-    client.release();
+    // Discarded after a failure: the connection may be why, and a dead one back
+    // in the pool would make the next query wait out its timeout as well.
+    client.release(failed);
   }
 }
 
@@ -131,6 +135,7 @@ export interface OrderTransition {
  */
 export async function transition(pool: Pool, input: OrderTransition): Promise<boolean> {
   const client = await pool.connect();
+  let failed = false;
   try {
     await client.query('BEGIN');
 
@@ -169,14 +174,18 @@ export async function transition(pool: Pool, input: OrderTransition): Promise<bo
     await client.query('COMMIT');
     return applied;
   } catch (error) {
-    await client.query('ROLLBACK');
+    failed = true;
+    await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   } finally {
-    client.release();
+    // Discarded after a failure: the connection may be why, and a dead one back
+    // in the pool would make the next query wait out its timeout as well.
+    client.release(failed);
   }
 }
 
 /** Appends an event to the audit log without changing status. */
+/** Records a saga message once per order, however often a retry publishes it again. */
 export async function recordSagaEvent(
   pool: Pool,
   orderId: string,
@@ -185,7 +194,8 @@ export async function recordSagaEvent(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO saga_events (order_id, type, payload)
-     VALUES ($1, $2, $3::jsonb)`,
+     SELECT $1::uuid, $2::text, $3::jsonb
+      WHERE NOT EXISTS (SELECT 1 FROM saga_events WHERE order_id = $1::uuid AND type = $2::text)`,
     [orderId, type, JSON.stringify(payload)],
   );
 }
@@ -246,6 +256,7 @@ export async function cancelTimedOutPayments(
   const reason = step.patch?.failureReason ?? null;
 
   const client = await pool.connect();
+  let failed = false;
   try {
     await client.query('BEGIN');
 
@@ -293,10 +304,13 @@ export async function cancelTimedOutPayments(
       userId: row.user_id,
     }));
   } catch (error) {
-    await client.query('ROLLBACK');
+    failed = true;
+    await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   } finally {
-    client.release();
+    // Discarded after a failure: the connection may be why, and a dead one back
+    // in the pool would make the next query wait out its timeout as well.
+    client.release(failed);
   }
 }
 

@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { FINAL_ORDER_STATUSES } from '@fss/core';
 import { loadConfig } from '@fss/config';
 import {
   countDeadLetters,
@@ -17,7 +18,7 @@ import {
  * `/admin/reconcile`. Waits for reservations and compensation to drain first,
  * since k6 finishes before the workers do.
  */
-export async function verifyStack(): Promise<void> {
+export async function verifyStack({ requireOrders = false } = {}): Promise<void> {
   const config = loadConfig();
   const redis = createRedis(config.REDIS_URL);
   const pool = createPgPool(config.DATABASE_URL);
@@ -30,12 +31,18 @@ export async function verifyStack(): Promise<void> {
 
   try {
     const totalStock = await readTotalStock(pool, config.SALE_ID);
-    const deadline = Date.now() + 45_000;
+    // Chaos waits for every saga: a reclaim alone takes XAUTOCLAIM's 30 s idle time.
+    const deadline = Date.now() + (requireOrders ? 300_000 : 45_000);
     let report = await readReport(redis, pool, config.SALE_ID);
+    let orders = await readOrderCounts(pool, config.SALE_ID);
 
-    while (!isDrained(report) && Date.now() < deadline) {
+    while (
+      (!isDrained(report) || (requireOrders && orders.unfinished > 0)) &&
+      Date.now() < deadline
+    ) {
       await sleep(500);
       report = await readReport(redis, pool, config.SALE_ID);
+      orders = await readOrderCounts(pool, config.SALE_ID);
     }
 
     console.log(
@@ -44,6 +51,11 @@ export async function verifyStack(): Promise<void> {
         `pendingReleases=${report.pendingReleases}`,
     );
 
+    if (requireOrders) {
+      // Otherwise a run where no request got through would pass the invariant.
+      assert(orders.total > 0, 'no orders were created, so the run proved nothing');
+      assert(orders.unfinished === 0, `${orders.unfinished} orders never reached a final status`);
+    }
     assert(report.settled, 'Redis never stopped changing, so the invariant could not be read');
     assert(report.unpersisted === 0, `${report.unpersisted} reservations were never persisted`);
     assert(report.pendingReleases === 0, `${report.pendingReleases} units were never released`);
@@ -90,6 +102,17 @@ async function readTotalStock(pool: Pool, saleId: string): Promise<number> {
   return row.total_stock;
 }
 
+async function readOrderCounts(pool: Pool, saleId: string) {
+  const result = await pool.query<{ total: number; unfinished: number }>(
+    `SELECT count(*)::int AS total,
+            (count(*) FILTER (WHERE NOT (status = ANY($2))))::int AS unfinished
+       FROM orders
+      WHERE sale_id = $1`,
+    [saleId, [...FINAL_ORDER_STATUSES]],
+  );
+  return result.rows[0] ?? { total: 0, unfinished: 0 };
+}
+
 async function readReport(redis: Redis, pool: Pool, saleId: string): Promise<ReconcileReport> {
   const report = await reconcileSale(pool, redis, saleId);
   if (!report) throw new Error(`Sale ${saleId} does not exist in Redis`);
@@ -108,8 +131,10 @@ const invokedDirectly =
   process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (invokedDirectly) {
-  verifyStack().catch((error: unknown) => {
-    console.error('\nFAIL —', error instanceof Error ? error.message : error);
-    process.exit(1);
-  });
+  verifyStack({ requireOrders: process.argv.includes('--require-orders') }).catch(
+    (error: unknown) => {
+      console.error('\nFAIL —', error instanceof Error ? error.message : error);
+      process.exit(1);
+    },
+  );
 }

@@ -105,6 +105,7 @@ services:
     restart: 'no'
 
   api:
+    restart: on-failure
     image: localhost/fss-node:api
     build:
       <<: *node-build
@@ -132,6 +133,7 @@ services:
       start_period: 10s
 
   orchestrator:
+    restart: on-failure
     image: localhost/fss-node:orchestrator
     build:
       <<: *node-build
@@ -159,6 +161,7 @@ services:
       start_period: 10s
 
   payment:
+    restart: on-failure
     image: localhost/fss-node:payment
     build:
       <<: *node-build
@@ -180,6 +183,7 @@ services:
       start_period: 10s
 
   shipping:
+    restart: on-failure
     image: localhost/fss-node:shipping
     build:
       <<: *node-build
@@ -223,7 +227,10 @@ services:
       - '8080:80'
     volumes:
       # :z relabels this one config file so SELinux lets the container read it.
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - ./nginx.conf:/etc/nginx/templates/nginx.conf.template:ro,z
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: '1'
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
     depends_on:
       api:
         condition: service_healthy

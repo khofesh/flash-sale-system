@@ -80,6 +80,9 @@ export function saleRedisKeys(saleId: string) {
     buyers: `sale:${tag}:buyers`,
     holders: `sale:${tag}:holders`,
     reservations: `sale:${tag}:reservations`,
+    /** The Redis `run_id` this sale's state was last known good on. */
+    redisRunId: `sale:${tag}:redis_run_id`,
+    rebuildLock: `sale:${tag}:rebuild_lock`,
   } as const;
 }
 
