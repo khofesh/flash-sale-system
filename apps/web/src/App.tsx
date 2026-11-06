@@ -218,7 +218,10 @@ export function App() {
     const pollSale = async () => {
       try {
         const sentAt = Date.now();
-        const response = await fetch('/api/sale');
+        // Always ask the network: a response from the browser cache has an old
+        // serverTime and a near-zero round trip, so it would win the bestRtt check
+        // below and leave the countdown up to a second late for good.
+        const response = await fetch('/api/sale', { cache: 'no-cache' });
         const receivedAt = Date.now();
         if (cancelled) return;
         if (response.status === 404) {

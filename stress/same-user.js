@@ -17,6 +17,7 @@ const unexpected = new Counter('abuse_unexpected');
 http.setResponseCallback(http.expectedStatuses(202, 409));
 
 export const options = {
+  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
   scenarios: {
     abuse: {
       executor: 'shared-iterations',

@@ -70,14 +70,7 @@ export function buildApp({
   const app = Fastify({ loggerInstance: logger });
 
   if (metrics) {
-    const startedAt = new WeakMap<object, bigint>();
-
-    app.addHook('onRequest', async (request) => {
-      startedAt.set(request, process.hrtime.bigint());
-    });
-
     app.addHook('onResponse', async (request, reply) => {
-      const start = startedAt.get(request);
       const labels = {
         method: request.method,
         // The pattern (`/api/purchases/:userId`) keeps the label set bounded.
@@ -85,9 +78,7 @@ export function buildApp({
         status: String(reply.statusCode),
       };
       metrics.httpRequests.inc(labels);
-      if (start !== undefined) {
-        metrics.httpRequestDuration.observe(labels, Number(process.hrtime.bigint() - start) / 1e9);
-      }
+      metrics.httpRequestDuration.observe(labels, reply.elapsedTime / 1_000);
     });
 
     app.get('/metrics', async (_request, reply) => {

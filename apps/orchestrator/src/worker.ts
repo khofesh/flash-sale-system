@@ -12,10 +12,12 @@ import {
 } from '@fss/core';
 import {
   ORDER_EVENTS_CONSUMER,
+  RebuildInProgressError,
   RedisReservationStore,
   SaleStockMissingError,
   backoffDelay,
   cancelTimedOutPayments,
+  fenceRestartedSale,
   findUnreleasedOrders,
   getOrderById,
   isMessageProcessed,
@@ -177,9 +179,15 @@ async function startRestartGuard(deps: OrchestratorDeps): Promise<StopFn> {
     }
 
     logger.warn({ saleId, known, runId }, 'redis restarted; rebuilding the sale');
-    await redis.del(keys.stock);
-    const report = await rebuildRedis(pool, redis, saleId);
-    logger.warn({ ...report }, 'sale rebuilt after a redis restart');
+    if (!(await fenceRestartedSale(redis, saleId, runId))) return;
+    try {
+      const report = await rebuildRedis(pool, redis, saleId);
+      logger.warn({ ...report }, 'sale rebuilt after a redis restart');
+    } catch (error) {
+      // The other replica noticed first. If it dies, the lock expires and this retries.
+      if (!(error instanceof RebuildInProgressError)) throw error;
+      logger.info({ saleId }, 'another replica is rebuilding the sale');
+    }
   };
 
   const loop = (async () => {

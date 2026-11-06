@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import { check } from 'k6';
+import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
 
 const baseUrl = __ENV.BASE_URL || 'http://host.docker.internal:8080';
@@ -33,7 +34,13 @@ export const options = {
     // SPEC §9.1 allows < 0.1% non-4xx errors. A Redis AOF rewrite can stall one
     // command past the API's 1 s fail-closed timeout; that shows up here.
     http_req_failed: ['rate<0.001'],
-    http_req_duration: ['p(95)<50', 'p(99)<100'],
+    http_req_duration: ['p(99)<50'],
+    // Tagging these makes the summary report each window, which is what shows
+    // latency stayed steady (SPEC §12.3). scripts/stress.ts compares them.
+    'http_req_duration{window:early}': ['p(99)<50'],
+    'http_req_duration{window:late}': ['p(99)<50'],
+    // A stack that cannot keep up shows as a generator falling short of the rate.
+    http_reqs: [`rate>=${rate * 0.99}`],
     soak_unexpected: ['count==0'],
     soak_purchases: ['count>0'],
   },
@@ -57,6 +64,13 @@ export function handleSummary(data) {
   };
 }
 
+/** Tags the first and last fifth of the run, so they can be compared. */
+function requestParams(extra = {}) {
+  const progress = exec.scenario.progress;
+  const window = progress < 0.2 ? 'early' : progress > 0.8 ? 'late' : 'middle';
+  return { ...extra, tags: { window } };
+}
+
 export default function () {
   const iteration = `${__VU}-${__ITER}`;
 
@@ -64,7 +78,7 @@ export default function () {
     const response = http.post(
       `${baseUrl}/api/purchases`,
       JSON.stringify({ userId: `soak-${iteration}` }),
-      { headers: { 'Content-Type': 'application/json' } },
+      requestParams({ headers: { 'Content-Type': 'application/json' } }),
     );
 
     if (response.status === 202) purchases.add(1);
@@ -78,7 +92,7 @@ export default function () {
     return;
   }
 
-  const response = http.get(`${baseUrl}/api/sale`);
+  const response = http.get(`${baseUrl}/api/sale`, requestParams());
   if (response.status >= 500) serverErrors.add(1);
   else if (response.status !== 200) unexpected.add(1);
 

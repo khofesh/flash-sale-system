@@ -36,6 +36,35 @@ interface OrderRow {
 const deadStatuses = new Set(['CANCELLED', 'REFUNDED']);
 const REBUILD_LOCK_SECONDS = 60;
 
+/** Another process holds the rebuild lock; it will reopen the sale. */
+export class RebuildInProgressError extends Error {
+  constructor(saleId: string) {
+    super(`A rebuild of sale ${saleId} is already running`);
+    this.name = 'RebuildInProgressError';
+  }
+}
+
+const FENCE_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then return 0 end
+redis.call('DEL', KEYS[2])
+return 1
+`;
+
+/**
+ * Closes the sale unless a rebuild for this Redis run has already finished, and
+ * returns whether it did. Atomic because replicas race: a plain GET then DEL could
+ * delete the stock another replica's rebuild just restored, after which `run_id`
+ * matches and nothing would ever reopen the sale.
+ */
+export async function fenceRestartedSale(
+  redis: Redis,
+  saleId: string,
+  runId: string,
+): Promise<boolean> {
+  const keys = saleRedisKeys(saleId);
+  return (await redis.eval(FENCE_SCRIPT, 2, keys.redisRunId, keys.stock, runId)) === 1;
+}
+
 /** Redis assigns a new `run_id` every time the server starts. */
 export async function readRedisRunId(redis: Redis): Promise<string> {
   const info = await redis.info('server');
@@ -71,7 +100,7 @@ export async function rebuildRedis(
 
   const keys = saleRedisKeys(saleId);
   const locked = await redis.set(keys.rebuildLock, '1', 'EX', REBUILD_LOCK_SECONDS, 'NX');
-  if (locked !== 'OK') throw new Error(`A rebuild of sale ${saleId} is already running`);
+  if (locked !== 'OK') throw new RebuildInProgressError(saleId);
 
   try {
     await redis.del(keys.stock);

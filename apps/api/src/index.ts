@@ -13,7 +13,7 @@ import {
   seedSale,
 } from '@fss/infra';
 import { buildApp } from './app.js';
-import { createAppMetrics } from './metrics.js';
+import { createAppMetrics, throttleRefresh } from './metrics.js';
 
 const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'api' : config.SERVICE_NAME;
@@ -27,6 +27,8 @@ const sqs = createSqsClient({
   region: config.AWS_REGION,
   accessKeyId: config.AWS_ACCESS_KEY_ID,
   secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
+  // Only used for scrapes: a dead broker must not hang /metrics.
+  requestTimeoutMs: 1_000,
 });
 const metrics = createAppMetrics();
 
@@ -90,14 +92,20 @@ try {
  */
 async function refreshMetrics(): Promise<void> {
   const { reservations } = saleRedisKeys(config.SALE_ID);
+  // Reset first: if a read fails the series disappear, instead of a stale "0"
+  // reading as a healthy queue during the outage it should be showing.
+  metrics.streamLag.reset();
+  metrics.streamPending.reset();
+  metrics.dlqDepth.reset();
+
   try {
     const groups = (await redis.xinfo('GROUPS', reservations)) as unknown[][];
-    metrics.streamLag.reset();
-    metrics.streamPending.reset();
     for (const fields of groups) {
       const field = (name: string) => fields[fields.indexOf(name) + 1];
       const group = String(field('name') ?? 'unknown');
-      metrics.streamLag.set({ group }, Number(field('lag') ?? 0));
+      // Redis reports a nil lag when it cannot compute one; unknown is not zero.
+      const lag = field('lag');
+      if (lag !== null && lag !== undefined) metrics.streamLag.set({ group }, Number(lag));
       metrics.streamPending.set({ group }, Number(field('pending') ?? 0));
     }
   } catch (error) {
@@ -107,7 +115,6 @@ async function refreshMetrics(): Promise<void> {
 
   try {
     const depths = await readDeadLetterDepths(sqs);
-    metrics.dlqDepth.reset();
     for (const [queue, depth] of Object.entries(depths)) {
       metrics.dlqDepth.set({ queue }, depth);
     }
@@ -125,7 +132,7 @@ const app = buildApp({
   adminToken: config.ADMIN_TOKEN,
   reservations,
   metrics,
-  refreshMetrics,
+  refreshMetrics: throttleRefresh(refreshMetrics, 5_000),
   soldOutRecheckMs: config.SOLD_OUT_RECHECK_MS,
 });
 

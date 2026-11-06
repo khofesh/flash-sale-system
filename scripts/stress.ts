@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { resolve } from 'node:path';
@@ -32,8 +32,18 @@ const scriptPath = resolve(process.cwd(), 'stress', `${name}.js`);
 const resultsDir = resolve(process.cwd(), 'stress/results');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const resultBase = `${resultsDir}/${stamp}-${name}`;
+const composeFile = 'infra/docker-compose.yml';
+// Only touch our own nginx: a custom BASE_URL points at something else.
+const ownsNginx = !process.env.BASE_URL;
+// Every k6 request comes from one address, which the per-IP limit would throttle.
+const stressRateLimit = { RATE_LIMIT_RPS: '100000', RATE_LIMIT_BURST: '50000' };
+// From the host, unlike BASE_URL, which is how the k6 container sees the stack.
+const metricsUrl = process.env.METRICS_URL ?? 'http://localhost:8080/metrics';
+const SAMPLE_INTERVAL_MS = 15_000;
 
 await prepareSale();
+if (ownsNginx) recreateNginx(stressRateLimit);
+if (ownsNginx) await warmUpNginx();
 
 mkdirSync(resultsDir, { recursive: true });
 writeFileSync(
@@ -48,6 +58,11 @@ writeFileSync(
       totalMemoryBytes: os.totalmem(),
       node: process.version,
       settings,
+      overrides: Object.fromEntries(
+        ['RATE', 'DURATION', 'ITERATIONS', 'VUS', 'MIN_RPS', 'MAX_P99_MS'].flatMap((key) =>
+          process.env[key] ? [[key, process.env[key]]] : [],
+        ),
+      ),
     },
     null,
     2,
@@ -78,26 +93,49 @@ const args = [
 ];
 
 if (settings.iterations > 0) {
-  args.push('-e', `ITERATIONS=${settings.iterations}`);
+  args.push('-e', `ITERATIONS=${process.env.ITERATIONS ?? settings.iterations}`);
 }
-if (process.env.MIN_RPS) args.push('-e', `MIN_RPS=${process.env.MIN_RPS}`);
-if (process.env.MAX_P99_MS) args.push('-e', `MAX_P99_MS=${process.env.MAX_P99_MS}`);
-if ('rate' in settings) {
-  args.push('-e', `RATE=${settings.rate}`, '-e', `DURATION=${settings.duration}`);
+for (const option of ['MIN_RPS', 'MAX_P99_MS', 'VUS'] as const) {
+  const value = process.env[option];
+  if (value) args.push('-e', `${option}=${value}`);
 }
+const rate = process.env.RATE ?? ('rate' in settings ? String(settings.rate) : undefined);
+if (rate) args.push('-e', `RATE=${rate}`);
+const duration = process.env.DURATION ?? ('duration' in settings ? settings.duration : undefined);
+if (duration) args.push('-e', `DURATION=${duration}`);
 
-const result = spawnSync(
-  'docker',
-  [...args, 'grafana/k6:0.57.0', 'run', '-'],
-  // The script goes in on stdin, so only the results directory needs a mount.
-  { input: readFileSync(scriptPath), stdio: ['pipe', 'inherit', 'inherit'] },
-);
+// Spike and soak write their own richer summary from handleSummary, and this flag
+// would overwrite it with the legacy format, which has no thresholds or tagged windows.
+const summaryFlags =
+  name === 'spike' || name === 'soak' ? [] : ['--summary-export=/results/k6-summary.json'];
+
+const samples: Sample[] = [];
+const sampler = name === 'soak' ? setInterval(() => void takeSample(), SAMPLE_INTERVAL_MS) : null;
+
+const k6Status = await new Promise<number>((done) => {
+  const child = spawn(
+    'docker',
+    [...args, 'grafana/k6:0.57.0', 'run', ...summaryFlags, '-'],
+    // The script goes in on stdin, so only the results directory needs a mount.
+    { stdio: ['pipe', 'inherit', 'inherit'] },
+  );
+  child.on('error', () => done(1));
+  child.on('close', (code) => done(code ?? 1));
+  child.stdin.end(readFileSync(scriptPath));
+});
+if (sampler) clearInterval(sampler);
 
 if (existsSync(k6Summary)) {
   renameSync(k6Summary, `${resultBase}-k6.json`);
 }
 
-let exitCode = result.status ?? 1;
+let exitCode = k6Status;
+
+if (name === 'soak') {
+  const failures = checkSoak();
+  for (const failure of failures) console.error(`soak FAIL — ${failure}`);
+  if (failures.length > 0) exitCode = 1;
+}
 
 console.log('\nverifying the stack…');
 try {
@@ -111,8 +149,146 @@ try {
   exitCode = 1;
 }
 
+if (ownsNginx) recreateNginx({});
+
 console.log(`\nresults written to ${resultBase}-*.json / .txt`);
 process.exit(exitCode);
+
+/** Applies a rate limit by recreating nginx, the only place it is configured. */
+function recreateNginx(limit: Record<string, string>): void {
+  const result = spawnSync(
+    'docker',
+    ['compose', '-f', composeFile, 'up', '-d', '--no-deps', '--force-recreate', '--wait', 'nginx'],
+    { encoding: 'utf8', env: { ...process.env, ...limit } },
+  );
+  if (result.status !== 0) {
+    console.error(`failed to recreate nginx with the rate limit for this run\n${result.stderr}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * A new nginx has no upstream connections yet, and opening them under load costs
+ * tens of milliseconds of p99. A real sale has pre-sale status polling doing this,
+ * so a run starts from that state rather than timing a restart this script caused.
+ */
+async function warmUpNginx(): Promise<void> {
+  const url = new URL('/api/sale', metricsUrl).toString();
+  const worker = async () => {
+    for (let request = 0; request < 50; request += 1) {
+      await fetch(url)
+        .then((response) => response.arrayBuffer())
+        .catch(() => undefined);
+    }
+  };
+  await Promise.all(Array.from({ length: 200 }, worker));
+}
+
+interface Sample {
+  at: string;
+  /** Resident memory per API replica, keyed by the upstream nginx reports. */
+  rssBytes: Record<string, number>;
+  /** Used V8 heap per API replica. Its low points approximate what survives GC. */
+  heapUsedBytes: Record<string, number>;
+  /** Highest backlog any replica reported for the orchestrator group. */
+  streamLag: number | null;
+}
+
+/**
+ * Round-robin spreads a few scrapes across the replicas, and X-Upstream says which
+ * one answered. A failed scrape only loses a data point, never fails the run.
+ */
+async function takeSample(): Promise<void> {
+  const sample: Sample = {
+    at: new Date().toISOString(),
+    rssBytes: {},
+    heapUsedBytes: {},
+    streamLag: null,
+  };
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      const response = await fetch(metricsUrl);
+      if (!response.ok) continue;
+      const body = await response.text();
+      const upstream = response.headers.get('x-upstream') ?? 'unknown';
+      const rss = /^process_resident_memory_bytes (\S+)$/m.exec(body)?.[1];
+      if (rss) sample.rssBytes[upstream] = Number(rss);
+      const heap = /^nodejs_heap_size_used_bytes (\S+)$/m.exec(body)?.[1];
+      if (heap) sample.heapUsedBytes[upstream] = Number(heap);
+      const lag = /^reservation_stream_lag_entries\{[^}]*\} (\S+)$/m.exec(body)?.[1];
+      if (lag) sample.streamLag = Math.max(sample.streamLag ?? 0, Number(lag));
+    } catch {
+      // Handled by the sample simply having fewer replicas in it.
+    }
+  }
+  samples.push(sample);
+}
+
+/**
+ * The soak's remaining pass criteria (SPEC §12.3), which k6 cannot express: latency
+ * and memory late in the run against the same measurements early in it. The first
+ * fifth of the samples is warm-up, while each replica's heap grows to its working size.
+ */
+function checkSoak(): string[] {
+  writeFileSync(`${resultBase}-samples.json`, `${JSON.stringify(samples, null, 2)}\n`);
+  const failures: string[] = [];
+
+  const k6Path = `${resultBase}-k6.json`;
+  if (existsSync(k6Path)) {
+    const metrics = (
+      JSON.parse(readFileSync(k6Path, 'utf8')) as {
+        metrics: Record<string, { values?: Record<string, number> } | undefined>;
+      }
+    ).metrics;
+    const p99 = (window: string) =>
+      metrics[`http_req_duration{window:${window}}`]?.values?.['p(99)'];
+    const early = p99('early');
+    const late = p99('late');
+    if (early === undefined || late === undefined) {
+      failures.push('the k6 summary has no early/late latency windows');
+    } else {
+      console.log(`latency p99: early ${early.toFixed(2)} ms, late ${late.toFixed(2)} ms`);
+      // The floor keeps sub-millisecond noise from counting as a trend.
+      if (late > Math.max(early * 2, 5)) {
+        failures.push(`p99 grew from ${early.toFixed(2)} ms to ${late.toFixed(2)} ms`);
+      }
+    }
+  }
+
+  const warmedUp = samples.slice(Math.floor(samples.length / 5));
+  const third = Math.floor(warmedUp.length / 3);
+  if (third === 0) {
+    failures.push('too few /metrics samples to judge memory growth');
+    return failures;
+  }
+
+  const replicas = new Set(warmedUp.flatMap((sample) => Object.keys(sample.heapUsedBytes)));
+  for (const replica of replicas) {
+    const floor = (window: Sample[]) => {
+      const values = window.flatMap((sample) => sample.heapUsedBytes[replica] ?? []);
+      return values.length > 0 ? Math.min(...values) : undefined;
+    };
+    const start = floor(warmedUp.slice(0, third));
+    const end = floor(warmedUp.slice(-third));
+    if (start === undefined || end === undefined) continue;
+
+    const growth = (end - start) / start;
+    const rss = warmedUp.flatMap((sample) => sample.rssBytes[replica] ?? []);
+    // RSS is reported but not judged: V8 grows it in steps and rarely gives it back,
+    // so a rising RSS alone cannot tell a larger heap from a leak.
+    console.log(
+      `memory ${replica}: heap floor ${toMb(start)} MB -> ${toMb(end)} MB ` +
+        `(${(growth * 100).toFixed(1)}%), rss ${toMb(rss[0] ?? 0)} MB -> ${toMb(rss.at(-1) ?? 0)} MB`,
+    );
+    if (growth > 0.25) failures.push(`${replica} heap floor grew ${(growth * 100).toFixed(1)}%`);
+  }
+  return failures;
+}
+
+function toMb(bytes: number): string {
+  return (bytes / 1024 / 1024).toFixed(0);
+}
 
 /**
  * Clears previous reservations so a spike is repeatable without recreating the

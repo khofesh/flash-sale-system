@@ -1,0 +1,15 @@
+{
+  "scenario": "soak",
+  "startedAt": "2026-11-06T10:53:53.461Z",
+  "platform": "linux 7.2.15-200.fc44.x86_64 x64",
+  "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+  "cpuCount": 24,
+  "totalMemoryBytes": 50418556928,
+  "node": "v24.22.1",
+  "settings": {
+    "stock": 100000,
+    "iterations": 0,
+    "rate": 2000,
+    "duration": "5m"
+  }
+}

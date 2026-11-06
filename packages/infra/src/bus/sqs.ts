@@ -21,6 +21,8 @@ export interface SqsBusOptions {
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
+  /** Fails a call after this long, with no retries. Not for long-polling consumers. */
+  requestTimeoutMs?: number;
 }
 
 export function createSqsClient(options: SqsBusOptions): SQSClient {
@@ -31,6 +33,15 @@ export function createSqsClient(options: SqsBusOptions): SQSClient {
       accessKeyId: options.accessKeyId,
       secretAccessKey: options.secretAccessKey,
     },
+    ...(options.requestTimeoutMs === undefined
+      ? {}
+      : {
+          maxAttempts: 1,
+          requestHandler: {
+            connectionTimeout: options.requestTimeoutMs,
+            requestTimeout: options.requestTimeoutMs,
+          },
+        }),
   });
 }
 

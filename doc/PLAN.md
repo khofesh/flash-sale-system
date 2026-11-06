@@ -290,7 +290,7 @@ pnpm stack:down
 - [x] nginx `limit_req` per IP (`RATE_LIMIT_RPS`) → 429 JSON. API replicas ×4, orchestrator ×2, payment ×2.
 - [x] Per-replica sold-out short-circuit flag (re-checked every 1 s).
 - [x] `Cache-Control` on `GET /api/sale`. Tune Redis and pg pool sizes.
-- [x] `/metrics` (prom-client): request rate and latency histogram, reserve outcomes, stream lag, DLQ depth.
+- [x] `/metrics` (`@prometheus-io/client`, the successor to the deprecated `prom-client`): request rate and latency histogram, reserve outcomes, stream lag, DLQ depth.
 - [x] `stress/soak.js` (2k req/s × 5 min).
 - [x] Record results in `stress/results/` (k6 summary JSON + verify output).
 
@@ -298,10 +298,17 @@ pnpm stack:down
 
 Measured on an AMD Ryzen 9 5900X (24 threads, 48 GB), rootless Podman, 4 API replicas:
 
-| Run   | Throughput | p95     | p99     | 5xx | Correctness |
-| ----- | ---------- | ------- | ------- | --- | ----------- |
-| Spike | 5,248 req/s | —      | 5.97 ms | 0   | 1,000 reserved, 9,002 sold out, no oversell |
-| Soak  | 1,997 req/s | 0.66 ms | 1.20 ms | 0   | 30,549 orders, invariant holds, DLQs empty |
+| Run               | Throughput  | p95     | p99      | 5xx | Correctness                                  |
+| ----------------- | ----------- | ------- | -------- | --- | -------------------------------------------- |
+| Spike (paced)     | 5,248 req/s | —       | 7.10 ms  | 0   | 1,000 reserved, 9,002 sold out, no oversell  |
+| Spike (`RATE=10000`) | 9,920 req/s | —    | 28.50 ms | 0   | 1,000 reserved, 8,956 sold out, no oversell  |
+| Soak (12 min)     | 1,999 req/s | 0.58 ms | 0.81 ms  | 0   | 72,037 orders, invariant holds, DLQs empty   |
+
+Soak stability: p99 was 0.87 ms in the first fifth of the run and 0.75 ms in the last. The used-heap low point changed by -24% to +6% per replica. RSS rose in steps from about 130 MB to 210 MB during the first 4 minutes, then stayed at 210–223 MB through the 12-minute run on the same processes. Stream lag peaked at 400 entries and recovered to 0.
+
+Chaos (`stress/chaos.sh`, one API replica and both orchestrators killed): 1,000 reserved, every reservation persisted, verify PASS. Its k6 thresholds fail by design.
+
+**Known deviation from SPEC §12.3:** the spike offers a flat 5,250 req/s with distinct ids and no 5 s ramp, because averaging over a ramp cannot show ≥ 5k req/s across 10k requests. So its throughput is the offered rate, not capacity, and about 90% of its requests are answered from the sold-out flag. Passing it needs a warm nginx: straight after an nginx restart p99 measured 27–143 ms, which is why `pnpm stress` warms up first.
 
 ### How to test Phase 5
 
@@ -315,6 +322,7 @@ pnpm stress soak    # 2k req/s for 5 min, flat latency, verify PASS, DLQs empty
 
 # Rate limiting: recreate nginx with a low limit and expect JSON 429s.
 . ./.envrc
+# The default is 100 req/s per IP, burst 200; pnpm stress raises it for its own run.
 RATE_LIMIT_RPS=5 RATE_LIMIT_BURST=1 docker compose -f infra/docker-compose.yml up -d --force-recreate nginx
 for i in $(seq 1 30); do curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/sale; done | sort | uniq -c
 # 429 bodies are {"code":"RATE_LIMITED"} with Retry-After: 1.

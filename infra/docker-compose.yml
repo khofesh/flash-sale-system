@@ -14,7 +14,7 @@ x-node-env: &node-env
   PAYMENT_FAILURE_RATE: ${PAYMENT_FAILURE_RATE:-0}
   PAYMENT_TIMEOUT_MS: ${PAYMENT_TIMEOUT_MS:-60000}
   PAYMENT_CONCURRENCY: ${PAYMENT_CONCURRENCY:-50}
-  SHIPPING_LATENCY_MS: ${SHIPPING_LATENCY_MS:-20}
+  SHIPPING_LATENCY_MS: ${SHIPPING_LATENCY_MS:-100}
   SHIPPING_FAILURE_RATE: ${SHIPPING_FAILURE_RATE:-0}
   SHIPPING_CONCURRENCY: ${SHIPPING_CONCURRENCY:-50}
   # Per-process Postgres connections. Four API replicas x 20 stays under 200.
@@ -244,10 +244,11 @@ services:
     environment:
       NGINX_ENTRYPOINT_LOCAL_RESOLVERS: '1'
       NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
-      # High enough for the 5k req/s spike from a single k6 container, low
-      # enough to shed abusive clients. Lower it to demo the 429 JSON response.
-      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-20000}
-      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-10000}
+      # Per client IP. A shopper polls about once a second, so this sheds abuse
+      # while leaving room for many shoppers behind one NAT. `pnpm stress` recreates
+      # nginx with a higher limit, because all of k6 arrives from a single address.
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-100}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-200}
     depends_on:
       api:
         condition: service_healthy

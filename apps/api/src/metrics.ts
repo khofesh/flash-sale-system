@@ -7,13 +7,6 @@ import {
   type RegistryContentType,
 } from '@prometheus-io/client';
 
-/** Labels on the HTTP metrics. `route` is the Fastify pattern, not the raw URL. */
-export interface HttpMetricLabels {
-  method: string;
-  route: string;
-  status: string;
-}
-
 export interface AppMetrics {
   registry: Registry<RegistryContentType>;
   httpRequests: Counter<'method' | 'route' | 'status'>;
@@ -88,5 +81,26 @@ export function createAppMetrics(): AppMetrics {
     streamLag,
     streamPending,
     dlqDepth,
+  };
+}
+
+/**
+ * `/metrics` is reachable without credentials and a refresh costs a Redis call
+ * plus several SQS calls, so scrapes share one in-flight refresh and reuse its
+ * result for `ttlMs`. A burst of scrapes cannot amplify into broker traffic.
+ */
+export function throttleRefresh(refresh: () => Promise<void>, ttlMs: number): () => Promise<void> {
+  let inflight: Promise<void> | null = null;
+  let finishedAt = -Infinity;
+
+  return () => {
+    if (inflight) return inflight;
+    if (performance.now() - finishedAt < ttlMs) return Promise.resolve();
+
+    inflight = refresh().finally(() => {
+      inflight = null;
+      finishedAt = performance.now();
+    });
+    return inflight;
   };
 }
