@@ -19,6 +19,7 @@
     "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev"
   },
   "devDependencies": {
+    "@aws-sdk/client-sqs": "3.1162.0",
     "@eslint/js": "10.0.1",
     "@fss/config": "workspace:*",
     "@fss/core": "workspace:*",

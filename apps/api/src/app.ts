@@ -1,18 +1,12 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import os from 'node:os';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
-import {
-  HELLO_STREAM,
-  deriveSaleStatus,
-  type HelloHop,
-  type HelloStatus,
-  type SaleStatus,
-} from '@fss/core';
+import { deriveSaleStatus, type SaleStatus } from '@fss/core';
 import {
   MAX_TOTAL_STOCK,
   RedisReservationStore,
   SaleHasOrdersError,
   getSaleSnapshot,
+  reconcileSale,
   resetSale,
   type Logger,
   type Pool,
@@ -35,15 +29,6 @@ interface BuildAppDeps {
   reservations?: ReservationStore;
 }
 
-interface HelloRow {
-  id: string;
-  name: string;
-  hops: HelloHop[];
-  status: HelloStatus;
-  created_at: Date;
-  updated_at: Date;
-}
-
 interface SaleView {
   saleId: string;
   status: SaleStatus;
@@ -61,8 +46,6 @@ interface AdminSaleBody {
   endsAt: string;
   totalStock: number;
 }
-
-const uuidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
 
 export function buildApp({
   redis,
@@ -264,89 +247,27 @@ export function buildApp({
         });
       },
     );
+
+    app.get('/admin/reconcile', {
+      onRequest: async (request, reply) => {
+        if (!tokenMatches(request.headers['x-admin-token'], expectedTokenHash)) {
+          return reply.code(401).send({ code: 'UNAUTHORIZED' });
+        }
+      },
+      handler: async (_request, reply) => {
+        try {
+          const report = await reconcileSale(pool, redis, saleId);
+          if (!report) {
+            return reply.code(404).send({ code: 'SALE_NOT_FOUND' });
+          }
+          return reply.code(report.ok ? 200 : 409).send(report);
+        } catch (error) {
+          logger.error({ err: error, saleId }, 'reconcile failed');
+          return reply.code(503).send({ code: 'UNAVAILABLE' });
+        }
+      },
+    });
   }
-
-  app.post<{ Body: { name: string } }>(
-    '/api/hello',
-    {
-      schema: {
-        body: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['name'],
-          properties: {
-            name: { type: 'string', minLength: 1, maxLength: 100 },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const name = request.body.name.trim();
-      if (!name) {
-        return reply.code(400).send({ code: 'VALIDATION_ERROR', message: 'name is required' });
-      }
-
-      const id = randomUUID();
-      try {
-        await redis.xadd(
-          HELLO_STREAM,
-          '*',
-          'id',
-          id,
-          'name',
-          name,
-          'hostname',
-          os.hostname(),
-          'ts',
-          new Date().toISOString(),
-        );
-      } catch (error) {
-        logger.error({ err: error }, 'failed to append hello message');
-        return reply.code(503).send({ code: 'UNAVAILABLE' });
-      }
-
-      return reply.code(202).send({ id });
-    },
-  );
-
-  app.get<{ Params: { id: string } }>(
-    '/api/hello/:id',
-    {
-      schema: {
-        params: {
-          type: 'object',
-          required: ['id'],
-          properties: {
-            id: { type: 'string', pattern: uuidPattern },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id } = request.params;
-      const result = await pool.query<HelloRow>(
-        `SELECT id, name, hops, status, created_at, updated_at
-           FROM hello_messages
-          WHERE id = $1`,
-        [id],
-      );
-
-      const row = result.rows[0];
-      if (!row) {
-        // Not persisted yet (briefly normal right after POST) or never arrived.
-        return reply.code(404).send({ code: 'NOT_FOUND', id });
-      }
-
-      return {
-        id: row.id,
-        name: row.name,
-        status: row.status,
-        hops: row.hops,
-        createdAt: row.created_at.toISOString(),
-        updatedAt: row.updated_at.toISOString(),
-      };
-    },
-  );
 
   return app;
 }

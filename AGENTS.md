@@ -11,9 +11,9 @@ A flash sale system: one product, limited stock, a fixed time window, one item p
 
 ## Status
 
-**PLAN Phases 0, 1 and 2 are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown. Phase 2 adds the atomic `reserve.lua`/`release.lua` scripts, `POST /api/purchases` with `Idempotency-Key`, `GET /api/purchases/:userId`, the Redis → Postgres reservation consumer, the `orders`/`saga_events`/`processed_messages` schema, the buy UI, the concurrency integration tests, and the spike/same-user stress scenarios with `stress/verify.ts`. Payment is an instant-success stub until Phase 3.
+**PLAN Phases 0, 1, 2 and 3 are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown. Phase 2 adds the atomic `reserve.lua`/`release.lua` scripts, `POST /api/purchases` with `Idempotency-Key`, `GET /api/purchases/:userId`, the Redis → Postgres reservation consumer, the `orders`/`saga_events`/`processed_messages` schema, the buy UI, the concurrency integration tests, and the spike/same-user stress scenarios with `stress/verify.ts`. Phase 3 adds the orchestrated payment/shipping saga: `core/orderStateMachine.ts`, conditional order transitions, SQS `payment.requested`/`shipping.requested`/result messages, deterministic payment/shipping mocks with configurable failure rates, the payment-timeout sweeper, compensation through `release.lua`, `GET /admin/reconcile`, saga integration tests and the Floci broker contract test.
 
-Next is **PLAN Phase 3** (payment and shipping saga). Don't start a later phase until the current phase's "Verify" block passes.
+Next is **PLAN Phase 4** (resilience). Don't start a later phase until the current phase's "Verify" block passes.
 
 ## Stack
 

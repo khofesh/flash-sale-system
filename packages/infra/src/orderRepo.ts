@@ -1,8 +1,9 @@
 import type { OrderStatus } from '@fss/core';
 import type { Pool, PoolClient } from 'pg';
 
-/** Consumer name recorded in `processed_messages` for stream deliveries. */
+/** Consumer names recorded in `processed_messages`. */
 export const RESERVATION_CONSUMER = 'orchestrator.reservations';
+export const ORDER_EVENTS_CONSUMER = 'orchestrator.order-events';
 
 export interface OrderRecord {
   id: string;
@@ -108,31 +109,179 @@ export async function persistReservation(
   }
 }
 
+export interface OrderTransition {
+  orderId: string;
+  from: OrderStatus;
+  to: OrderStatus;
+  /** Audit event type, e.g. `order.paid`. */
+  type: string;
+  payload?: unknown;
+  patch?: {
+    paymentRef?: string;
+    shipmentRef?: string;
+    failureReason?: string;
+  };
+}
+
 /**
- * Phase 2 payment stub: payment succeeds immediately, so a RESERVED order is
- * marked COMPLETED. The conditional UPDATE makes a redelivered reservation a
- * no-op, and the event is only appended when the transition actually happened.
+ * Applies one conditional state transition and appends its saga event atomically
+ * (`UPDATE ... WHERE id = $1 AND status = $expected`, SPEC §4.2). Returns false
+ * when the order was not in the expected state: a duplicate or out-of-order
+ * message that must not be applied again.
  */
-export async function completeOrderStub(pool: Pool, orderId: string): Promise<boolean> {
+export async function transition(pool: Pool, input: OrderTransition): Promise<boolean> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
+    const assignments = ['status = $2', 'updated_at = now()'];
+    const values: unknown[] = [input.orderId, input.to];
+
+    if (input.patch?.paymentRef !== undefined) {
+      values.push(input.patch.paymentRef);
+      assignments.push(`payment_ref = $${values.length}`);
+    }
+    if (input.patch?.shipmentRef !== undefined) {
+      values.push(input.patch.shipmentRef);
+      assignments.push(`shipment_ref = $${values.length}`);
+    }
+    if (input.patch?.failureReason !== undefined) {
+      values.push(input.patch.failureReason);
+      assignments.push(`failure_reason = $${values.length}`);
+    }
+
+    values.push(input.from);
+    const expected = `$${values.length}`;
+
     const updated = await client.query<{ id: string }>(
       `UPDATE orders
-          SET status = 'COMPLETED',
-              updated_at = now()
-        WHERE id = $1 AND status = 'RESERVED'
+          SET ${assignments.join(', ')}
+        WHERE id = $1 AND status = ${expected}
         RETURNING id`,
-      [orderId],
+      values,
     );
 
-    if (updated.rowCount === 1) {
-      await appendSagaEvent(client, orderId, 'order.completed', { stub: true });
+    const applied = updated.rowCount === 1;
+    if (applied) {
+      await appendSagaEvent(client, input.orderId, input.type, input.payload ?? {});
     }
 
     await client.query('COMMIT');
-    return updated.rowCount === 1;
+    return applied;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Appends an event to the audit log without changing status. */
+export async function recordSagaEvent(
+  pool: Pool,
+  orderId: string,
+  type: string,
+  payload: unknown = {},
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO saga_events (order_id, type, payload)
+     VALUES ($1, $2, $3::jsonb)`,
+    [orderId, type, JSON.stringify(payload)],
+  );
+}
+
+export async function isMessageProcessed(
+  pool: Pool,
+  consumer: string,
+  messageId: string,
+): Promise<boolean> {
+  const result = await pool.query(
+    'SELECT 1 FROM processed_messages WHERE consumer = $1 AND message_id = $2',
+    [consumer, messageId],
+  );
+  return result.rowCount === 1;
+}
+
+/**
+ * Marks a message as consumed. Called after every side effect succeeded, so a
+ * crash mid-handling leaves it unmarked and SQS redelivers it.
+ */
+export async function markMessageProcessed(
+  pool: Pool,
+  consumer: string,
+  messageId: string,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO processed_messages (consumer, message_id)
+     VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`,
+    [consumer, messageId],
+  );
+}
+
+export interface TimedOutOrder {
+  id: string;
+  saleId: string;
+  userId: string;
+}
+
+/**
+ * Cancels PAYMENT_PENDING orders older than `timeoutMs` and records the event.
+ * `FOR UPDATE SKIP LOCKED` lets several orchestrator replicas sweep at once
+ * without fighting over the same rows (SPEC §4.2).
+ */
+export async function cancelTimedOutPayments(
+  pool: Pool,
+  timeoutMs: number,
+  limit = 100,
+): Promise<TimedOutOrder[]> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const expired = await client.query<{ id: string; sale_id: string; user_id: string }>(
+      `SELECT id, sale_id, user_id
+         FROM orders
+        WHERE status = 'PAYMENT_PENDING'
+          AND updated_at < now() - ($1::int * interval '1 millisecond')
+        ORDER BY updated_at
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED`,
+      [timeoutMs, limit],
+    );
+
+    if (expired.rowCount === 0) {
+      await client.query('COMMIT');
+      return [];
+    }
+
+    const ids = expired.rows.map((row) => row.id);
+    const updated = await client.query<{ id: string; sale_id: string; user_id: string }>(
+      `UPDATE orders
+          SET status = 'CANCELLED',
+              failure_reason = 'PAYMENT_TIMEOUT',
+              updated_at = now()
+        WHERE id = ANY($1::uuid[]) AND status = 'PAYMENT_PENDING'
+        RETURNING id, sale_id, user_id`,
+      [ids],
+    );
+
+    if (updated.rows.length > 0) {
+      const cancelled = updated.rows.map((row) => row.id);
+      await client.query(
+        `INSERT INTO saga_events (order_id, type, payload)
+         SELECT id, 'order.cancelled', '{"reason":"PAYMENT_TIMEOUT"}'::jsonb
+           FROM unnest($1::uuid[]) AS id`,
+        [cancelled],
+      );
+    }
+
+    await client.query('COMMIT');
+    return updated.rows.map((row) => ({
+      id: row.id,
+      saleId: row.sale_id,
+      userId: row.user_id,
+    }));
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -156,6 +305,14 @@ export async function getOrderByUser(
     [saleId, userId],
   );
 
+  const row = result.rows[0];
+  return row ? toRecord(row) : undefined;
+}
+
+export async function getOrderById(pool: Pool, orderId: string): Promise<OrderRecord | undefined> {
+  const result = await pool.query<OrderRow>(`SELECT ${orderColumns} FROM orders WHERE id = $1`, [
+    orderId,
+  ]);
   const row = result.rows[0];
   return row ? toRecord(row) : undefined;
 }

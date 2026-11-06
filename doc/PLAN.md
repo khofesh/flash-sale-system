@@ -184,15 +184,15 @@ pnpm stack:down
 
 ## Phase 3: Payment and shipping saga (SPEC §4.2, §7)
 
-- [ ] `core/orderStateMachine.ts`: transitions table, `nextAction(order, event)` as a pure function, plus compensation rules.
-- [ ] `infra/orderRepo.transition(id, from, to)` (conditional UPDATE) + `saga_events` append + `processed_messages` dedup, all in one transaction.
-- [ ] Orchestrator: `RESERVED → PAYMENT_PENDING` (publish `payment.requested`), handle `payment.succeeded/failed`, `PAID → SHIPPING_PENDING`, `shipping.succeeded/failed`, refund path. Compensation calls `release.lua`.
-- [ ] Payment mock: `PAYMENT_FAILURE_RATE`, `PAYMENT_LATENCY_MS`, idempotent on `orderId`, supports `payment.refund_requested`.
-- [ ] Shipping mock: `SHIPPING_FAILURE_RATE`, idempotent.
-- [ ] Payment-timeout sweeper (every 5 s, `FOR UPDATE SKIP LOCKED`): `PAYMENT_PENDING` older than `PAYMENT_TIMEOUT_MS` → CANCELLED + release. A late success after cancel → refund.
-- [ ] Web: progress line Reserved → Paid → Shipped / Cancelled (with reason). On CANCELLED while the sale is still ACTIVE, show "try again".
-- [ ] Remove the hello flow (keep `0000_hello.sql` history, drop the table in a new migration).
-- [ ] Tests: state machine (unit, every transition). Saga end-to-end with failure rates 0 and 1. Duplicate message delivery is a no-op. Broker contract test (SPEC §12.2).
+- [x] `core/orderStateMachine.ts`: transitions table, `nextAction(order, event)` as a pure function, plus compensation rules.
+- [x] `infra/orderRepo.transition(id, from, to)` (conditional UPDATE) + `saga_events` append + `processed_messages` dedup, all in one transaction.
+- [x] Orchestrator: `RESERVED → PAYMENT_PENDING` (publish `payment.requested`), handle `payment.succeeded/failed`, `PAID → SHIPPING_PENDING`, `shipping.succeeded/failed`, refund path. Compensation calls `release.lua`.
+- [x] Payment mock: `PAYMENT_FAILURE_RATE`, `PAYMENT_LATENCY_MS`, idempotent on `orderId`, supports `payment.refund_requested`.
+- [x] Shipping mock: `SHIPPING_FAILURE_RATE`, idempotent.
+- [x] Payment-timeout sweeper (every 5 s, `FOR UPDATE SKIP LOCKED`): `PAYMENT_PENDING` older than `PAYMENT_TIMEOUT_MS` → CANCELLED + release. A late success after cancel → refund.
+- [x] Web: progress line Reserved → Paid → Shipped / Cancelled (with reason). On CANCELLED while the sale is still ACTIVE, show "try again".
+- [x] Remove the hello flow (keep `0000_hello.sql` history, drop the table in a new migration).
+- [x] Tests: state machine (unit, every transition). Saga end-to-end with failure rates 0 and 1. Duplicate message delivery is a no-op. Broker contract test (SPEC §12.2).
 
 **Verify:** with `PAYMENT_FAILURE_RATE=1`, a purchase ends CANCELLED, stock is back to N, and the same user can buy again. With `0`, it reaches COMPLETED. The Floci UI shows the DLQs empty. `/admin/reconcile` reports no drift.
 
