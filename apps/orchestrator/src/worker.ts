@@ -13,6 +13,7 @@ import {
 import {
   ORDER_EVENTS_CONSUMER,
   RedisReservationStore,
+  backoffDelay,
   cancelTimedOutPayments,
   findUnreleasedOrders,
   getOrderById,
@@ -22,6 +23,7 @@ import {
   persistReservation,
   recordSagaEvent,
   resolveMigrationsDir,
+  retry,
   runMigrations,
   saleRedisKeys,
   transition,
@@ -32,6 +34,7 @@ import {
   type Pool,
   type Redis,
   type ReservationStore,
+  type RetryOptions,
   type StopFn,
 } from '@fss/infra';
 
@@ -39,6 +42,25 @@ export const RESERVATIONS_GROUP = 'orchestrator';
 
 /** Replans before leaving a message for redelivery; statuses only move forward. */
 const MAX_PLAN_ATTEMPTS = 5;
+
+/**
+ * Postgres (and broker) failures are retried with backoff before a message is
+ * left for redelivery. Redis holds the reservations, so purchases keep working
+ * while Postgres recovers and the stream buffers the work.
+ */
+function retryOptions(logger: Logger, operation: string): RetryOptions {
+  return {
+    attempts: 6,
+    baseMs: 100,
+    maxMs: 3_000,
+    jitter: 0.3,
+    onRetry: (error, attempt, delayMs) =>
+      logger.warn(
+        { err: error, attempt, delayMs, operation },
+        'operation failed; retrying with backoff',
+      ),
+  };
+}
 
 export interface OrchestratorDeps {
   redis: Redis;
@@ -80,7 +102,10 @@ export async function startOrchestrator(deps: OrchestratorDeps): Promise<StopFn>
   const consumer = `${os.hostname()}-${process.pid}`;
   const stopStream = consumeReservations(deps, consumer, reservations);
   const stopEvents = await deps.bus.subscribe('order-events', (message) =>
-    handleOrderEvent(deps, reservations, message.body),
+    retry(
+      () => handleOrderEvent(deps, reservations, message.body),
+      retryOptions(logger, 'order event'),
+    ),
   );
   const stopSweeper = startPaymentSweeper(deps, reservations);
 
@@ -111,6 +136,7 @@ function consumeReservations(
   const claimIntervalMs = deps.claimIntervalMs ?? 5_000;
   let running = true;
   let lastClaim = 0;
+  let readFailures = 0;
   // XAUTOCLAIM scans the pending list in pages; keep the cursor so entries past
   // the first page are reclaimed too.
   let claimCursor = '0-0';
@@ -119,7 +145,11 @@ function consumeReservations(
     for (const [entryId, rawFields] of entries) {
       if (!running) return;
       try {
-        await handleReservation(deps, reservations, fieldsToObject(rawFields));
+        const fields = fieldsToObject(rawFields);
+        await retry(
+          () => handleReservation(deps, reservations, fields),
+          retryOptions(logger, 'reservation'),
+        );
         await redis.xack(stream, RESERVATIONS_GROUP, entryId);
       } catch (error) {
         if (error instanceof InvalidEntryError) {
@@ -173,6 +203,7 @@ function consumeReservations(
         for (const [, entries] of batches ?? []) {
           await handleEntries(entries);
         }
+        readFailures = 0;
       } catch (error) {
         if (!running) return;
         if (error instanceof Error && error.message.includes('NOGROUP')) {
@@ -184,8 +215,10 @@ function consumeReservations(
           });
           continue;
         }
-        logger.error({ err: error }, 'reservation stream read failed');
-        await sleep(1_000);
+        readFailures += 1;
+        const delayMs = backoffDelay(readFailures, { baseMs: 1_000, maxMs: 30_000, jitter: 0.3 });
+        logger.error({ err: error, delayMs }, 'reservation stream read failed');
+        await sleepWhile(delayMs, () => running);
       }
     }
   })();
@@ -402,9 +435,12 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
   const timeoutMs = deps.paymentTimeoutMs ?? 60_000;
   const intervalMs = deps.sweepIntervalMs ?? 5_000;
   let running = true;
+  let failures = 0;
 
   const loop = (async () => {
     while (running) {
+      let failed = false;
+
       try {
         const expired = await cancelTimedOutPayments(pool, timeoutMs);
         for (const order of expired) {
@@ -412,21 +448,36 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
         }
       } catch (error) {
         if (!running) return;
+        failed = true;
         logger.error({ err: error }, 'payment timeout sweep failed');
       }
 
       try {
         for (const order of await findUnreleasedOrders(pool)) {
           await releaseOrder(deps, reservations, order, 'SWEEP').catch((error: unknown) => {
+            failed = true;
             logger.error({ err: error, orderId: order.id }, 'failed to release order');
           });
         }
       } catch (error) {
         if (!running) return;
+        failed = true;
         logger.error({ err: error }, 'release sweep failed');
       }
 
-      await sleep(intervalMs);
+      if (failed) {
+        failures += 1;
+        const delayMs = backoffDelay(failures, {
+          baseMs: intervalMs,
+          maxMs: 30_000,
+          jitter: 0.3,
+        });
+        logger.warn({ delayMs, failures }, 'sweeper backing off after a failure');
+        await sleepWhile(delayMs, () => running);
+      } else {
+        failures = 0;
+        await sleepWhile(intervalMs, () => running);
+      }
     }
   })();
 
@@ -434,6 +485,16 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
     running = false;
     await loop;
   };
+}
+
+/** Sleeps in small slices so a shutdown signal does not wait out a long backoff. */
+async function sleepWhile(ms: number, running: () => boolean): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (running()) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await sleep(Math.min(250, remaining));
+  }
 }
 
 function fieldsToObject(raw: string[]): ReservationFields {

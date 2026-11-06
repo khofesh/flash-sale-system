@@ -16,6 +16,8 @@
     "stack:down": ". ./.envrc && docker compose -f infra/docker-compose.yml down -v",
     "e2e": "tsx scripts/e2e.ts",
     "stress": ". ./.envrc && tsx scripts/stress.ts",
+    "chaos": "bash stress/chaos.sh",
+    "rebuild-redis": "tsx scripts/rebuild-redis.ts",
     "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev"
   },
   "devDependencies": {

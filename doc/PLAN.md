@@ -250,14 +250,33 @@ The stale-event, sweeper-race and failed-conflict-release cases need precise tim
 
 ## Phase 4: Resilience (SPEC §9.3)
 
-- [ ] Orchestrator: `XAUTOCLAIM` of pending entries idle for more than 30 s, and graceful shutdown (stop reading, finish in-flight work, exit).
-- [ ] API: fail closed with 503 + `Retry-After` when Redis is down. Graceful shutdown via Fastify `close()`.
-- [ ] PG outage: orchestrator retries with exponential backoff + jitter, status endpoint falls back to Redis.
-- [ ] Redis rebuild job (`pnpm rebuild-redis`): recompute stock, buyers and holders from PG live orders + unconsumed stream entries.
-- [ ] `GET /admin/reconcile`: check the invariant from SPEC §5.3.
-- [ ] Tests: orchestrator crash mid-message → exactly-once persistence. Redis down → 503, no 500s.
+- [x] Orchestrator: `XAUTOCLAIM` of pending entries idle for more than 30 s, and graceful shutdown (stop reading, finish in-flight work, exit).
+- [x] API: fail closed with 503 + `Retry-After` when Redis is down. Graceful shutdown via Fastify `close()`.
+- [x] PG outage: orchestrator retries with exponential backoff + jitter, status endpoint falls back to Redis.
+- [x] Redis rebuild job (`pnpm rebuild-redis`): recompute stock, buyers and holders from PG live orders + unconsumed stream entries.
+- [x] `GET /admin/reconcile`: check the invariant from SPEC §5.3.
+- [x] Tests: orchestrator crash mid-message → exactly-once persistence. Redis down → 503, no 500s.
 
 **Verify:** `stress/chaos.sh` runs the spike while `docker kill`-ing one API replica and the orchestrator. `verify.ts` passes, and every reservation is eventually persisted.
+
+### How to test Phase 4
+
+```bash
+pnpm build && pnpm lint && pnpm test
+pnpm test:int   # tests/resilience.int.test.ts: crashed-consumer reclaim, Redis-down 503s,
+                # Postgres fallback, rebuild from Postgres + stream
+
+pnpm stack:down && pnpm stack:up
+pnpm chaos      # spike while one API replica and the orchestrator are killed and restarted
+                # k6 may exit 99 (exact counts cannot hold under chaos); verify PASS is the criterion
+
+# Redis rebuild (stop traffic or run it while the stack is idle)
+docker compose -f infra/docker-compose.yml exec -T redis redis-cli FLUSHALL
+pnpm rebuild-redis
+curl -s localhost:8080/admin/reconcile -H 'x-admin-token: dev-admin-token'   # ok: true
+pnpm stack:down
+```
+
 
 ---
 
