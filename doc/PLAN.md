@@ -275,6 +275,7 @@ pnpm chaos      # spike while one API replica and the orchestrator are killed an
 
 # Redis rebuild. Safe under traffic: the sale answers 503 until it finishes.
 # A Redis restart triggers this automatically; FLUSHALL needs it by hand.
+. ./.envrc   # docker needs DOCKER_HOST pointing at the Podman socket
 docker compose -f infra/docker-compose.yml exec -T redis redis-cli FLUSHALL
 pnpm rebuild-redis
 curl -s localhost:8080/admin/reconcile -H 'x-admin-token: dev-admin-token'   # ok: true
