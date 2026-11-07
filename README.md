@@ -99,10 +99,12 @@ runtimes. On Apple Silicon every image used here has an arm64 build.
 - **Podman machine.**
 
   ```bash
+  brew install podman
   brew install docker docker-compose   # the docker CLI and Compose plugin; Podman ships its own engine
+  # START you can skip this if you already configure it in GUI settings
   podman machine init --cpus 4 --memory 8192
   podman machine start
-  sudo /opt/podman/bin/podman-mac-helper install   # exposes /var/run/docker.sock
+  # END
   podman machine stop && podman machine start
   ```
 
