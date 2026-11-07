@@ -30,7 +30,7 @@ then run as an orchestrated saga over SQS.
 ## Tested on
 
 - Linux (Fedora 44): rootless Podman as the engine, with the Docker CLI and Compose plugin.
-- macOS (MacBook Pro M5): Colima, with the Docker CLI and `docker-compose`.
+- macOS (MacBook Pro M5): Colima & Podman, with the Docker CLI and `docker-compose`.
 - Windows (WSL 2): rootless Podman inside Ubuntu as the engine, with the Docker CLI and Compose plugin.
 
 ## Prerequisites
