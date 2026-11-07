@@ -8,14 +8,9 @@ then run as an orchestrated saga over SQS.
 - Plan: [`doc/PLAN.md`](doc/PLAN.md)
 - How to read stress output: [`stress/README.md`](stress/README.md)
 
-## Tested On:
-
-- Linux Fedora 44, podman as the engine, docker cli, docker compose plugin
-- MacOS (Macbook Pro M5), **colima**, docker, docker-compose
-- Windows WSL2 (rootless Podman inside Ubuntu itself), podman as the engine, docker cli, docker compose plugin
-
 ## Contents
 
+- [Tested on](#tested-on)
 - [Prerequisites](#prerequisites)
   - [Linux (default)](#linux-default)
   - [macOS](#macos)
@@ -32,6 +27,12 @@ then run as an orchestrated saga over SQS.
 - [Stress results](#stress-results)
 - [Repository layout](#repository-layout)
 
+## Tested on
+
+- Linux (Fedora 44): rootless Podman as the engine, with the Docker CLI and Compose plugin.
+- macOS (MacBook Pro M5): Colima, with the Docker CLI and `docker-compose`.
+- Windows (WSL 2): rootless Podman inside Ubuntu as the engine, with the Docker CLI and Compose plugin.
+
 ## Prerequisites
 
 - Node 24+ and pnpm 12 (`npx get-pnpm`).
@@ -46,14 +47,15 @@ the `DOCKER_HOST` socket on Linux, `/var/run/docker.sock` everywhere else. Both 
 haven't set them yourself. Run `source .envrc` (or `direnv allow`) to use plain `docker` commands
 against the same stack.
 
-Ports `8080`, `6379`, `5432` and `4566` must be free. The full run-through has been verified on
-rootless Podman on Fedora. The macOS and Windows setups below have not been verified end to end yet.
+Ports `8080`, `6379`, `5432` and `4566` must be free. The setups marked **tested** below have been
+verified end to end (see [Tested on](#tested-on)); the others have not.
 
 ### Linux (default)
 
 Either runtime works:
 
-- **Rootless Podman 5 (tested)**, driven through the `docker` CLI and the Compose plugin (**docker engine is not required**). Enable the socket:
+- **Rootless Podman 5 (tested)**, driven through the `docker` CLI and the Compose plugin (Docker
+  Engine is not required). Enable the socket:
 
   ```bash
   systemctl --user enable --now podman.socket
@@ -120,7 +122,7 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
 
 1. Install WSL 2 with Ubuntu (`wsl --install -d Ubuntu`, from an admin PowerShell) and reboot.
 2. Install a runtime, either:
-   - Docker Engine (or rootless Podman) inside Ubuntu itself (**tested**), following the
+   - Rootless Podman (**tested**) or Docker Engine inside Ubuntu itself, following the
      [Linux](#linux-default) steps. Ubuntu's `podman` package ships no `docker` CLI or Compose
      plugin, so add Docker's apt repository:
 
@@ -149,7 +151,7 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
      ```
 
    - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
-     turned on for your Ubuntu distro, or
+     turned on for your Ubuntu distro.
 
 3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npx get-pnpm`.
 4. Clone into the Linux file system (`~/src/...`, not `/mnt/c/...`) and follow the
@@ -271,7 +273,7 @@ and `release.lua` is idempotent, so duplicate and out-of-order messages are harm
 auth token, and its free tier is limited to non-commercial use. Floci is MIT-licensed and needs no
 token.
 
-- _Cost:_ Floci is a young project. So the image tag is pinned, the code only uses plain SQS calls
+- _Cost:_ Floci is a young project, so the image tag is pinned, the code only uses plain SQS calls
   behind the `MessageBus` interface, and `tests/broker.int.test.ts` checks the queue behaviour the
   saga depends on (DLQ after N receives, redelivery after the visibility timeout). Moving to ElasticMQ
   or real SQS only means changing `SQS_ENDPOINT`.
