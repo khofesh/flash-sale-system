@@ -17,7 +17,7 @@ Phase 6 adds the full README, the architecture diagram (`doc/architecture.mmd`, 
 
 ## Stack
 
-- TypeScript and Node 24 LTS, in pnpm workspaces.
+- TypeScript and Node 26 LTS (see SPEC §15.4), in pnpm workspaces.
 - API: Fastify. It is stateless and runs as N replicas behind nginx, which does round-robin and `limit_req`.
 - Web: React with Vite.
 - Redis 7 with AOF everysec. Redis decides purchases, and its stream (`XADD`) is the outbox.

@@ -30,12 +30,12 @@ then run as an orchestrated saga over SQS.
 ## Tested on
 
 - Linux (Fedora 44): rootless Podman as the engine, with the Docker CLI and Compose plugin.
-- macOS (MacBook Pro M5): Colima, with the Docker CLI and `docker-compose`.
+- macOS (MacBook Pro M5): Colima & Podman, with the Docker CLI and `docker-compose`.
 - Windows (WSL 2): rootless Podman inside Ubuntu as the engine, with the Docker CLI and Compose plugin.
 
 ## Prerequisites
 
-- Node 24+ and pnpm 12 (`npx get-pnpm`).
+- Node 26+ and pnpm 12 (`npx get-pnpm`).
 - A container runtime with a Compose v2 CLI that supports `up --wait`. `podman-compose` is not
   supported.
 - A POSIX shell (bash or zsh). The `test:int`, `stack:*`, `stress` and `chaos` scripts source
@@ -72,7 +72,7 @@ Then follow the [Quick start](#quick-start).
 
 ### macOS
 
-Install Node 24+ and pnpm (`nvm install --lts`, then `npx get-pnpm`), and one of these
+Install Node 26+ and pnpm (`nvm install --lts`, then `npx get-pnpm`), and one of these
 runtimes. On Apple Silicon every image used here has an arm64 build.
 
 - **Colima (tested)**
@@ -99,10 +99,12 @@ runtimes. On Apple Silicon every image used here has an arm64 build.
 - **Podman machine.**
 
   ```bash
+  brew install podman
   brew install docker docker-compose   # the docker CLI and Compose plugin; Podman ships its own engine
+  # START you can skip this if you already configure it in GUI settings
   podman machine init --cpus 4 --memory 8192
   podman machine start
-  sudo /opt/podman/bin/podman-mac-helper install   # exposes /var/run/docker.sock
+  # END
   podman machine stop && podman machine start
   ```
 
@@ -153,7 +155,7 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
    - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
      turned on for your Ubuntu distro.
 
-3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npx get-pnpm`.
+3. Inside Ubuntu, install Node 26 (for example with `nvm`) and `npx get-pnpm`.
 4. Clone into the Linux file system (`~/src/...`, not `/mnt/c/...`) and follow the
    [Quick start](#quick-start).
 

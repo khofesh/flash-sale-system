@@ -236,7 +236,7 @@ services:
       start_period: 5s
 
   nginx:
-    image: nginx:1.27.3-alpine
+    image: nginx:1.30.6-alpine3.24
     ports:
       - '8080:80'
     volumes:
