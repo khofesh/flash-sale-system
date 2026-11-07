@@ -228,7 +228,33 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
    - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
      turned on for your Ubuntu distro, or
    - Docker Engine (or rootless Podman) inside Ubuntu itself, following the
-     [Linux](#linux-default) steps.
+     [Linux](#linux-default) steps. Ubuntu's `podman` package ships no `docker` CLI or Compose
+     plugin, so add Docker's apt repository:
+
+     ```bash
+     # Add Docker's official GPG key:
+     sudo apt update
+     sudo apt install ca-certificates curl
+     sudo install -m 0755 -d /etc/apt/keyrings
+     sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+     sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+     # Add the repository to Apt sources:
+     sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+     Types: deb
+     URIs: https://download.docker.com/linux/ubuntu
+     Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+     Components: stable
+     Architectures: $(dpkg --print-architecture)
+     Signed-By: /etc/apt/keyrings/docker.asc
+     EOF
+
+     sudo apt update
+
+     # Install only the CLI and Compose plugin; Podman is the engine:
+     sudo apt install -y docker-ce-cli docker-compose-plugin
+     ```
+
 3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npm i -g pnpm@12.15.0`.
 4. Clone into the Linux file system (`~/src/...`, not `/mnt/c/...`) and follow the
    [Quick start](#quick-start).
