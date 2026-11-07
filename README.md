@@ -10,8 +10,8 @@ then run as an orchestrated saga over SQS.
 
 ## Quick start
 
-You need Node 24, pnpm 12 (`npm i -g pnpm@12.15.0`) and a container runtime (see
-[Prerequisites](#prerequisites)).
+You need Node 24, pnpm 12 (`npm i -g pnpm@12.15.0`) and a container runtime. Linux is the default; see
+[Prerequisites](#prerequisites) for macOS and Windows (WSL 2).
 
 ```bash
 git clone <this repo> && cd flash-sale-system
@@ -143,19 +143,103 @@ products, and a waiting room. Rate limiting is per IP only, so many users behind
 
 - Node 24 and pnpm 12.
 - A container runtime with a Compose v2 CLI that supports `up --wait`. `podman-compose` is not
-  supported. Either of these works:
-  - **Docker**, used as is.
-  - **Rootless Podman 5**, driven through the `docker` CLI and the Compose plugin. Enable the socket
-    with `systemctl --user enable --now podman.socket`.
+  supported.
+- A POSIX shell (bash or zsh). The `test:int`, `stack:*`, `stress` and `chaos` scripts source
+  `.envrc`, and `chaos` runs `stress/chaos.sh`.
 
-The `test:int`, `stack:*`, `stress` and `chaos` scripts source `.envrc`. When `DOCKER_HOST` is unset
-and a rootless Podman socket exists, it points `DOCKER_HOST` at that socket. It also sets
-`CONTAINER_SOCKET`, the engine socket mounted into Floci: the `DOCKER_HOST` socket on Linux,
-`/var/run/docker.sock` on macOS (Docker Desktop or Podman machine). Run `source .envrc` (or
-`direnv allow`) to use plain `docker` commands against the same stack.
+`.envrc` does two things. When `DOCKER_HOST` is unset and a rootless Podman socket exists, it points
+`DOCKER_HOST` at that socket. It also sets `CONTAINER_SOCKET`, the engine socket mounted into Floci:
+the `DOCKER_HOST` socket on Linux, `/var/run/docker.sock` everywhere else. Both are only set when you
+haven't set them yourself. Run `source .envrc` (or `direnv allow`) to use plain `docker` commands
+against the same stack.
 
-Ports `8080`, `6379`, `5432` and `4566` must be free. The full run-through below has been verified on
-rootless Podman on Fedora, but not yet on Docker.
+Ports `8080`, `6379`, `5432` and `4566` must be free. The full run-through has been verified on
+rootless Podman on Fedora. The macOS and Windows setups below have not been verified end to end yet.
+
+### Linux (default)
+
+Either runtime works:
+
+- **Docker Engine** with the Compose plugin (`docker compose version`), used as is. Add yourself to
+  the `docker` group or use rootless Docker.
+- **Rootless Podman 5**, driven through the `docker` CLI and the Compose plugin. Enable the socket:
+
+  ```bash
+  systemctl --user enable --now podman.socket
+  ```
+
+  `.envrc` finds it at `$XDG_RUNTIME_DIR/podman/podman.sock`. Under SELinux, Testcontainers' reaper
+  (Ryuk) must run privileged; `.envrc` sets `TESTCONTAINERS_RYUK_PRIVILEGED=true`, which is still
+  only your user's privileges.
+
+Then follow the [Quick start](#quick-start).
+
+### macOS
+
+Install Node 24 and pnpm (`brew install node@24`, then `npm i -g pnpm@12.15.0`), and one of these
+runtimes. On Apple Silicon every image used here has an arm64 build.
+
+- **Docker Desktop.** Nothing else to do: the CLI, Compose and `/var/run/docker.sock` come with it.
+- **Colima.**
+
+  ```bash
+  brew install colima docker docker-compose
+  colima start --cpu 4 --memory 8
+  ```
+
+  Register the Compose plugin as Homebrew prints it (`cliPluginsExtraDirs` in
+  `~/.docker/config.json`). The `docker` CLI uses the `colima` context, but Testcontainers reads
+  `DOCKER_HOST`, so before `pnpm test:int` export:
+
+  ```bash
+  export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+  export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+  ```
+
+  The override is the socket path inside the Colima VM, which Ryuk mounts. `CONTAINER_SOCKET`
+  keeps its `/var/run/docker.sock` default for the same reason.
+
+- **Podman machine.**
+
+  ```bash
+  brew install docker docker-compose   # the docker CLI and Compose plugin; Podman ships its own engine
+  podman machine init --cpus 4 --memory 8192
+  podman machine start
+  sudo /opt/podman/bin/podman-mac-helper install   # exposes /var/run/docker.sock
+  podman machine stop && podman machine start
+  ```
+
+  The helper path depends on how Podman was installed (`brew` puts it under `$(brew --prefix)/bin`).
+  `.envrc` does not look for a Podman socket on macOS, so the `docker` CLI uses
+  `/var/run/docker.sock` directly.
+
+Give the VM at least 4 CPUs and 8 GB: the stack runs 4 API replicas, and the spike and soak runs
+are CPU bound. The stress numbers below come from Linux and will be lower inside a macOS VM.
+
+The default macOS bash is 3.2. `stress/chaos.sh` is written to run on it.
+
+### Windows
+
+Use **WSL 2**. The scripts need a POSIX shell, and running from the Windows file system makes bind
+mounts and file watching slow. Native PowerShell or `cmd` is not supported.
+
+1. Install WSL 2 with Ubuntu (`wsl --install -d Ubuntu`, from an admin PowerShell) and reboot.
+2. Install a runtime, either:
+   - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
+     turned on for your Ubuntu distro, or
+   - Docker Engine (or rootless Podman) inside Ubuntu itself, following the
+     [Linux](#linux-default) steps.
+3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npm i -g pnpm@12.15.0`.
+4. Clone into the Linux file system (`~/src/...`, not `/mnt/c/...`) and follow the
+   [Quick start](#quick-start).
+
+Clone from inside WSL so the files keep LF line endings: a Windows `git` with `core.autocrlf=true`
+writes CRLF, which breaks `.envrc` and `stress/chaos.sh`. If you must use a Windows checkout, clone
+with `git clone -c core.autocrlf=false`.
+
+Docker Desktop forwards the published ports to Windows, so <http://localhost:8080> opens from a
+Windows browser. Under WSL, `uname -s` is `Linux`; with Docker Desktop `DOCKER_HOST` is unset, so
+`CONTAINER_SOCKET` falls back to `/var/run/docker.sock`, which Docker Desktop provides in the distro.
 
 ## Running it
 
