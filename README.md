@@ -35,7 +35,7 @@ then run as an orchestrated saga over SQS.
 
 ## Prerequisites
 
-- Node 24+ and pnpm 12 (`npx get-pnpm`).
+- Node 26+ and pnpm 12 (`npx get-pnpm`).
 - A container runtime with a Compose v2 CLI that supports `up --wait`. `podman-compose` is not
   supported.
 - A POSIX shell (bash or zsh). The `test:int`, `stack:*`, `stress` and `chaos` scripts source
@@ -72,7 +72,7 @@ Then follow the [Quick start](#quick-start).
 
 ### macOS
 
-Install Node 24+ and pnpm (`nvm install --lts`, then `npx get-pnpm`), and one of these
+Install Node 26+ and pnpm (`nvm install --lts`, then `npx get-pnpm`), and one of these
 runtimes. On Apple Silicon every image used here has an arm64 build.
 
 - **Colima (tested)**
@@ -153,7 +153,7 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
    - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
      turned on for your Ubuntu distro.
 
-3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npx get-pnpm`.
+3. Inside Ubuntu, install Node 26 (for example with `nvm`) and `npx get-pnpm`.
 4. Clone into the Linux file system (`~/src/...`, not `/mnt/c/...`) and follow the
    [Quick start](#quick-start).
 

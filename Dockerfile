@@ -1,5 +1,7 @@
-FROM node:26-alpine AS base
-RUN npm install -g pnpm@12.18.0
+FROM node:26.13.0-alpine3.24 AS base
+# npm is only needed to install pnpm; its bundled deps carry CVEs, so drop it.
+RUN npm install -g pnpm@12.18.0 \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 WORKDIR /app
 
 FROM base AS deps
@@ -26,6 +28,6 @@ COPY --from=build /app /app
 ENV APP=${APP}
 CMD ["sh", "-c", "node apps/${APP}/dist/index.js"]
 
-FROM nginx:1.27.3-alpine AS web
+FROM nginx:1.30.6-alpine3.24 AS web
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 COPY infra/web-nginx.conf /etc/nginx/conf.d/default.conf

@@ -38,7 +38,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
 **Goal:** `docker compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
 
 ### 0.1 Repo scaffolding
-- [x] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`24`), `.gitignore`, `.env.example`.
+- [x] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`26`, was `24`; see SPEC §15.4), `.gitignore`, `.env.example`.
 - [x] Workspaces, each with `package.json`, `tsconfig.json` and `src/index.ts`:
   - `packages/config`: zod env parsing (`loadConfig()`), shared by all apps.
   - `packages/core`: empty domain module plus a `hello()` pure function (gives the unit test something to test).
@@ -361,3 +361,4 @@ If time is short, cut from the end: P5 (keep the spike test from P2), then P4's 
 | Testcontainers slow or flaky on CI | Reuse containers per test file. Fall back to `docker compose` services in CI. |
 | k6 numbers depend on the laptop | Report hardware with results. Correctness thresholds (oversell = 0) never depend on hardware. |
 | Clock drift between replicas | All window checks use Redis `TIME` inside Lua (SPEC §4.1). |
+| Base-image CVEs (Node's bundled npm, old nginx) | Pin exact tags and scan with Trivy (0 HIGH/CRITICAL). Delete npm/npx after installing pnpm. Runtime is Node 26 LTS (SPEC §15.4). |

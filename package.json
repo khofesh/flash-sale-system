@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -30,7 +30,7 @@
     "@fss/infra": "workspace:*",
     "@testcontainers/postgresql": "12.2.1",
     "@testcontainers/redis": "12.2.1",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.6",
     "eslint": "10.14.0",
     "globals": "17.14.0",
     "knip": "6.44.1",
