@@ -11,8 +11,8 @@ then run as an orchestrated saga over SQS.
 ## Tested On:
 
 - Linux Fedora 44, podman as the engine, docker cli, docker compose plugin
-- MacOS (Macbook Pro M5), colima, docker, docker-compose
-- Windows WSL2 (ubuntu), podman as the engine, docker cli, docker compose plugin
+- MacOS (Macbook Pro M5), **colima**, docker, docker-compose
+- Windows WSL2 (rootless Podman inside Ubuntu itself), podman as the engine, docker cli, docker compose plugin
 
 ## Contents
 
@@ -34,7 +34,7 @@ then run as an orchestrated saga over SQS.
 
 ## Prerequisites
 
-- Node 24 and pnpm 12 (`npm i -g pnpm@12.15.0`).
+- Node 24+ and pnpm 12 (`npx get-pnpm`).
 - A container runtime with a Compose v2 CLI that supports `up --wait`. `podman-compose` is not
   supported.
 - A POSIX shell (bash or zsh). The `test:int`, `stack:*`, `stress` and `chaos` scripts source
@@ -53,9 +53,7 @@ rootless Podman on Fedora. The macOS and Windows setups below have not been veri
 
 Either runtime works:
 
-- **Docker Engine** with the Compose plugin (`docker compose version`), used as is. Add yourself to
-  the `docker` group or use rootless Docker.
-- **Rootless Podman 5**, driven through the `docker` CLI and the Compose plugin. Enable the socket:
+- **Rootless Podman 5 (tested)**, driven through the `docker` CLI and the Compose plugin (**docker engine is not required**). Enable the socket:
 
   ```bash
   systemctl --user enable --now podman.socket
@@ -65,15 +63,17 @@ Either runtime works:
   (Ryuk) must run privileged; `.envrc` sets `TESTCONTAINERS_RYUK_PRIVILEGED=true`, which is still
   only your user's privileges.
 
+- **Docker Engine** with the Compose plugin (`docker compose version`), used as is. Add yourself to
+  the `docker` group or use rootless Docker.
+
 Then follow the [Quick start](#quick-start).
 
 ### macOS
 
-Install Node 24 and pnpm (`brew install node@24`, then `npm i -g pnpm@12.15.0`), and one of these
+Install Node 24+ and pnpm (`nvm install --lts`, then `npx get-pnpm`), and one of these
 runtimes. On Apple Silicon every image used here has an arm64 build.
 
-- **Docker Desktop.** Nothing else to do: the CLI, Compose and `/var/run/docker.sock` come with it.
-- **Colima.**
+- **Colima (tested)**
 
   ```bash
   brew install colima docker docker-compose
@@ -91,6 +91,8 @@ runtimes. On Apple Silicon every image used here has an arm64 build.
 
   The override is the socket path inside the Colima VM, which Ryuk mounts. `CONTAINER_SOCKET`
   keeps its `/var/run/docker.sock` default for the same reason.
+
+- **Docker Desktop.** Nothing else to do: the CLI, Compose and `/var/run/docker.sock` come with it.
 
 - **Podman machine.**
 
@@ -118,9 +120,7 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
 
 1. Install WSL 2 with Ubuntu (`wsl --install -d Ubuntu`, from an admin PowerShell) and reboot.
 2. Install a runtime, either:
-   - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
-     turned on for your Ubuntu distro, or
-   - Docker Engine (or rootless Podman) inside Ubuntu itself, following the
+   - Docker Engine (or rootless Podman) inside Ubuntu itself (**tested**), following the
      [Linux](#linux-default) steps. Ubuntu's `podman` package ships no `docker` CLI or Compose
      plugin, so add Docker's apt repository:
 
@@ -148,7 +148,10 @@ mounts and file watching slow. Native PowerShell or `cmd` is not supported.
      sudo apt install -y docker-ce-cli docker-compose-plugin
      ```
 
-3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npm i -g pnpm@12.15.0`.
+   - **Docker Desktop** with the WSL 2 backend, and _Settings → Resources → WSL integration_
+     turned on for your Ubuntu distro, or
+
+3. Inside Ubuntu, install Node 24 (for example with `nvm`) and `npx get-pnpm`.
 4. Clone into the Linux file system (`~/src/...`, not `/mnt/c/...`) and follow the
    [Quick start](#quick-start).
 
