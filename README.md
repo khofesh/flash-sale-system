@@ -360,6 +360,28 @@ pnpm stress soak       # 2k req/s for 5 minutes
 **Each run resets the sale and truncates the orders**, so don't run these against data you want to
 keep. Each one finishes by running `stress/verify.ts`, and a failure there fails the run.
 
+#### macOS with Colima: `Cannot connect to the Docker daemon`
+
+If a stress run (usually `pnpm chaos`) fails partway with `Cannot connect to the Docker daemon at
+unix://…/.colima/default/docker.sock`, Colima hasn't crashed. `dockerd` in the VM is still healthy.
+The SSH forward that carries `docker.sock` to the host has dropped. With `portForwarder: ssh`, every
+published port and the Docker socket share one SSH connection. When chaos kills and recreates
+containers, the published ports are forwarded again and again. Under spike load the socket forward
+can be lost, which breaks the k6 output stream (`broken pipe`).
+
+Switch the port forwarding to gRPC, then reset the stack and rerun:
+
+```bash
+colima stop
+colima start --port-forwarder grpc   # or set `portForwarder: grpc` in ~/.colima/default/colima.yaml
+pnpm stack:down && pnpm stack:up
+pnpm chaos                           # or whichever run failed
+```
+
+A failed run proves nothing: `verify.ts` never ran, and the killed containers were not restarted.
+If the socket still drops, run chaos on Linux or Podman instead. `colima restart` alone only
+restores the socket until the next heavy run.
+
 ## Stress results
 
 One recorded run, on 2026-11-06, with everything on one machine: AMD Ryzen 9 5900X (12 cores, 24
