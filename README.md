@@ -8,6 +8,12 @@ then run as an orchestrated saga over SQS.
 - Plan: [`doc/PLAN.md`](doc/PLAN.md)
 - How to read stress output: [`stress/README.md`](stress/README.md)
 
+## Tested On:
+
+- Linux Fedora 44, podman as the engine, docker cli, docker compose plugin
+- MacOS (Macbook Pro M5), colima, docker, docker-compose
+- Windows WSL2 (ubuntu), podman as the engine, docker cli, docker compose plugin
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
