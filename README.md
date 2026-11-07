@@ -172,7 +172,7 @@ With the [Prerequisites](#prerequisites) in place:
 ```bash
 git clone <this repo> && cd flash-sale-system
 pnpm i
-pnpm stack:up     # builds and starts everything; about a minute the first time
+pnpm stack:down && pnpm stack:up     # builds and starts everything; about a minute the first time
 pnpm e2e          # one purchase through to COMPLETED
 ```
 
