@@ -149,7 +149,9 @@ products, and a waiting room. Rate limiting is per IP only, so many users behind
     with `systemctl --user enable --now podman.socket`.
 
 The `test:int`, `stack:*`, `stress` and `chaos` scripts source `.envrc`. When `DOCKER_HOST` is unset
-and a rootless Podman socket exists, it points `DOCKER_HOST` at that socket. Run `source .envrc` (or
+and a rootless Podman socket exists, it points `DOCKER_HOST` at that socket. It also sets
+`CONTAINER_SOCKET`, the engine socket mounted into Floci: the `DOCKER_HOST` socket on Linux,
+`/var/run/docker.sock` on macOS (Docker Desktop or Podman machine). Run `source .envrc` (or
 `direnv allow`) to use plain `docker` commands against the same stack.
 
 Ports `8080`, `6379`, `5432` and `4566` must be free. The full run-through below has been verified on

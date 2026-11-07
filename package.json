@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "build:packages": "pnpm --filter \"./packages/**\" build",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --config vitest.config.ts",
@@ -15,9 +16,9 @@
     "stack:up": ". ./.envrc && docker compose -f infra/docker-compose.yml up -d --build --wait",
     "stack:down": ". ./.envrc && docker compose -f infra/docker-compose.yml down -v",
     "e2e": "tsx scripts/e2e.ts",
-    "stress": ". ./.envrc && tsx scripts/stress.ts",
+    "stress": "pnpm build:packages && . ./.envrc && tsx scripts/stress.ts",
     "chaos": "bash stress/chaos.sh",
-    "rebuild-redis": "tsx scripts/rebuild-redis.ts",
+    "rebuild-redis": "pnpm build:packages && tsx scripts/rebuild-redis.ts",
     "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev",
     "knip": "knip"
   },
