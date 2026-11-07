@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "build:packages": "pnpm --filter \"./packages/**\" build",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run --config vitest.config.ts",
@@ -15,10 +16,11 @@
     "stack:up": ". ./.envrc && docker compose -f infra/docker-compose.yml up -d --build --wait",
     "stack:down": ". ./.envrc && docker compose -f infra/docker-compose.yml down -v",
     "e2e": "tsx scripts/e2e.ts",
-    "stress": ". ./.envrc && tsx scripts/stress.ts",
+    "stress": "pnpm build:packages && . ./.envrc && tsx scripts/stress.ts",
     "chaos": "bash stress/chaos.sh",
-    "rebuild-redis": "tsx scripts/rebuild-redis.ts",
-    "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev"
+    "rebuild-redis": "pnpm build:packages && tsx scripts/rebuild-redis.ts",
+    "dev": "pnpm build && pnpm --filter @fss/api --filter @fss/web --parallel dev",
+    "knip": "knip"
   },
   "devDependencies": {
     "@aws-sdk/client-sqs": "3.1162.0",
@@ -29,10 +31,9 @@
     "@testcontainers/postgresql": "12.2.1",
     "@testcontainers/redis": "12.2.1",
     "@types/node": "24.19.2",
-    "@types/pg": "8.23.1",
     "eslint": "10.14.0",
     "globals": "17.14.0",
-    "pino-pretty": "13.2.0",
+    "knip": "6.44.1",
     "prettier": "3.9.10",
     "testcontainers": "12.2.1",
     "tsx": "4.23.15",

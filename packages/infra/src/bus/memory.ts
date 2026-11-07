@@ -6,7 +6,7 @@ import type {
   QueueName,
   StopFn,
   SubscribeOptions,
-} from './types.js';
+} from './types.ts';
 
 export class InMemoryBus implements MessageBus {
   private readonly subscribers = new Map<QueueName, Set<MessageHandler>>();

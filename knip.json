@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "tags": ["-lintignore"],
+  "ignoreDependencies": ["k6"],
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.ts", "stress/*.{ts,js}", "infra/*.ts", "tests/**/*.test.ts"],
+      "project": ["scripts/**/*.ts", "stress/**/*.{ts,js}", "infra/**/*.ts", "tests/**/*.ts"]
+    },
+    "apps/*": { "project": ["src/**/*.{ts,tsx}"] },
+    "packages/*": { "project": ["src/**/*.ts"] }
+  }
+}

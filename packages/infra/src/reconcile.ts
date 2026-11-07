@@ -1,8 +1,8 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Pool } from 'pg';
-import type { Redis } from './redis.js';
-import { RESERVATION_CONSUMER } from './orderRepo.js';
-import { getSaleSnapshot, saleRedisKeys } from './saleRepo.js';
+import type { Redis } from './redis.ts';
+import { RESERVATION_CONSUMER } from './orderRepo.ts';
+import { getSaleSnapshot, saleRedisKeys } from './saleRepo.ts';
 
 export interface ReconcileReport {
   saleId: string;

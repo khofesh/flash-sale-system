@@ -22,10 +22,10 @@ import {
   type Redis,
   type StopFn,
 } from '@fss/infra';
-import { buildApp } from '../apps/api/src/app.js';
-import { startOrchestrator } from '../apps/orchestrator/src/worker.js';
-import { startPayment } from '../apps/payment/src/worker.js';
-import { startShipping } from '../apps/shipping/src/worker.js';
+import { buildApp } from '../apps/api/src/app.ts';
+import { startOrchestrator } from '../apps/orchestrator/src/worker.ts';
+import { startPayment } from '../apps/payment/src/worker.ts';
+import { startShipping } from '../apps/shipping/src/worker.ts';
 
 const images = {
   redis: 'redis:7.4.2-alpine',

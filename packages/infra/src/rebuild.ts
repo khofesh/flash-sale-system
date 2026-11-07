@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
-import { RESERVATION_CONSUMER } from './orderRepo.js';
-import type { Redis } from './redis.js';
-import { saleRedisKeys } from './saleRepo.js';
+import { RESERVATION_CONSUMER } from './orderRepo.ts';
+import type { Redis } from './redis.ts';
+import { saleRedisKeys } from './saleRepo.ts';
 
 export interface RebuildReport {
   saleId: string;

@@ -6,7 +6,7 @@ import {
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { Logger } from '../logger.js';
+import type { Logger } from '../logger.ts';
 import type {
   BusMessage,
   MessageBus,
@@ -14,7 +14,7 @@ import type {
   QueueName,
   StopFn,
   SubscribeOptions,
-} from './types.js';
+} from './types.ts';
 
 export interface SqsBusOptions {
   endpoint: string;

@@ -1,6 +1,6 @@
 import type { ChainableCommander } from 'ioredis';
 import type { Pool } from 'pg';
-import type { Redis } from './redis.js';
+import type { Redis } from './redis.ts';
 
 /** Largest value a Postgres INTEGER column (`sales.total_stock`) can hold. */
 export const MAX_TOTAL_STOCK = 2_147_483_647;
@@ -46,7 +46,7 @@ export interface SeedResult {
 }
 
 /** The sale is defined in Redis but its stock key is missing. Callers must fail closed. */
-export class SaleStateMissingError extends Error {
+class SaleStateMissingError extends Error {
   constructor(saleId: string) {
     super(`Redis stock for sale ${saleId} is missing`);
     this.name = 'SaleStateMissingError';
@@ -222,7 +222,7 @@ export async function getSaleSnapshot(redis: Redis, saleId: string): Promise<Sal
   };
 }
 
-export function resolveSeed(seed: SaleSeed, now = Date.now()): SaleRecord {
+function resolveSeed(seed: SaleSeed, now = Date.now()): SaleRecord {
   const startsAt = seed.startsAt
     ? parseDate(seed.startsAt, 'startsAt')
     : new Date(seed.endsAt ? now : now + 60_000);

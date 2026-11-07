@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createLogger, type Pool, type Redis } from '@fss/infra';
-import { buildApp } from '../apps/api/src/app.js';
-import { createAppMetrics, throttleRefresh } from '../apps/api/src/metrics.js';
+import { buildApp } from '../apps/api/src/app.ts';
+import { createAppMetrics, throttleRefresh } from '../apps/api/src/metrics.ts';
 
 // No containers: the scrape route only needs the registry and the refresh hook.
 // The first request proves the HTTP hook records a bounded route label.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { OrderStatus } from './purchase.js';
+import type { OrderStatus } from './purchase.ts';
 import {
   ORDER_TRANSITIONS,
   SAGA_RESULT_EVENT_TYPES,
@@ -10,7 +10,7 @@ import {
   transitionTarget,
   type SagaEvent,
   type SagaStep,
-} from './orderStateMachine.js';
+} from './orderStateMachine.ts';
 
 function transitionSteps(steps: SagaStep[]): Array<[OrderStatus, OrderStatus]> {
   return steps.flatMap((step) =>

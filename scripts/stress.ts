@@ -4,7 +4,7 @@ import os from 'node:os';
 import { resolve } from 'node:path';
 import { loadConfig } from '@fss/config';
 import { createPgPool, createRedis, resetSale, saleRedisKeys } from '@fss/infra';
-import { verifyStack } from '../stress/verify.js';
+import { verifyStack } from '../stress/verify.ts';
 
 const scenario = process.argv.slice(2).find((argument) => argument !== '--') ?? 'smoke';
 const scenarios = {

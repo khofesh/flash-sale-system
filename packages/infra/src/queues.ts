@@ -5,14 +5,14 @@ import {
   SetQueueAttributesCommand,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
-import type { QueueName } from './bus/types.js';
+import type { QueueName } from './bus/types.ts';
 
 interface QueueDefinition {
   name: QueueName;
   deadLetterQueue: `${QueueName}-dlq`;
 }
 
-export const QUEUE_DEFINITIONS: readonly QueueDefinition[] = [
+const QUEUE_DEFINITIONS: readonly QueueDefinition[] = [
   { name: 'payment-requests', deadLetterQueue: 'payment-requests-dlq' },
   { name: 'shipping-requests', deadLetterQueue: 'shipping-requests-dlq' },
   { name: 'order-events', deadLetterQueue: 'order-events-dlq' },

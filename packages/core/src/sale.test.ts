@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveSaleStatus } from './sale.js';
+import { deriveSaleStatus } from './sale.ts';
 
 const startsAt = Date.parse('2026-01-01T10:00:00.000Z');
 const endsAt = Date.parse('2026-01-01T11:00:00.000Z');

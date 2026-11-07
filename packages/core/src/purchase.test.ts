@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FINAL_ORDER_STATUSES, parseReserveReply, purchaseResponse } from './purchase.js';
+import { FINAL_ORDER_STATUSES, parseReserveReply, purchaseResponse } from './purchase.ts';
 
 describe('purchaseResponse', () => {
   const cases = [

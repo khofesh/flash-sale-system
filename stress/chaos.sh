@@ -15,7 +15,11 @@ k6_running() {
 }
 
 api_id="$("${compose[@]}" ps -q api | head -n1)"
-mapfile -t orchestrator_ids < <("${compose[@]}" ps -q orchestrator)
+# A read loop, not mapfile: macOS ships bash 3.2.
+orchestrator_ids=()
+while IFS= read -r id; do
+  [[ -n "$id" ]] && orchestrator_ids+=("$id")
+done < <("${compose[@]}" ps -q orchestrator)
 if [[ -z "$api_id" || ${#orchestrator_ids[@]} -eq 0 ]]; then
   echo "chaos: the stack is not running (run pnpm stack:up first)" >&2
   exit 1

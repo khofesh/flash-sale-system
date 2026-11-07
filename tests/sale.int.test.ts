@@ -15,7 +15,7 @@ import {
   type Pool,
   type Redis,
 } from '@fss/infra';
-import { buildApp } from '../apps/api/src/app.js';
+import { buildApp } from '../apps/api/src/app.ts';
 
 const images = {
   redis: 'redis:7.4.2-alpine',

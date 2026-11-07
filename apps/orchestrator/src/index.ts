@@ -7,7 +7,7 @@ import {
   createSqsClient,
   SqsBus,
 } from '@fss/infra';
-import { startOrchestrator } from './worker.js';
+import { startOrchestrator } from './worker.ts';
 
 const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'orchestrator' : config.SERVICE_NAME;

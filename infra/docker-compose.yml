@@ -71,10 +71,10 @@ services:
     image: floci/floci:2.4.0
     ports:
       - '4566:4566'
-    # Rootless Podman API socket, needed by the Floci web console. label=disable lets
-    # the container use the socket without relabeling it (never use :z on a socket).
+    # Engine API socket (set by .envrc), needed by the Floci web console. label=disable
+    # lets the container use the socket without relabeling it (never use :z on a socket).
     volumes:
-      - ${XDG_RUNTIME_DIR:?set XDG_RUNTIME_DIR}/podman/podman.sock:/var/run/docker.sock
+      - ${CONTAINER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     security_opt:
       - label=disable
     healthcheck:
@@ -84,7 +84,8 @@ services:
       retries: 30
 
   queue-init:
-    image: localhost/fss-node:api
+    # Own tag: services building one tag in parallel collide on containerd image stores.
+    image: localhost/fss-node:queue-init
     build:
       <<: *node-build
       args:
@@ -99,7 +100,7 @@ services:
     restart: 'no'
 
   migrate:
-    image: localhost/fss-node:api
+    image: localhost/fss-node:migrate
     build:
       <<: *node-build
       args:

@@ -12,8 +12,8 @@ import {
   saleRedisKeys,
   seedSale,
 } from '@fss/infra';
-import { buildApp } from './app.js';
-import { createAppMetrics, throttleRefresh } from './metrics.js';
+import { buildApp } from './app.ts';
+import { createAppMetrics, throttleRefresh } from './metrics.ts';
 
 const config = loadConfig();
 const service = config.SERVICE_NAME === 'unknown' ? 'api' : config.SERVICE_NAME;

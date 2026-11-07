@@ -11,9 +11,9 @@ A flash sale system: one product, limited stock, a fixed time window, one item p
 
 ## Status
 
-**PLAN Phases 0, 1, 2, 3, 4 and 5 are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown. Phase 2 adds the atomic `reserve.lua`/`release.lua` scripts, `POST /api/purchases` with `Idempotency-Key`, `GET /api/purchases/:userId`, the Redis → Postgres reservation consumer, the `orders`/`saga_events`/`processed_messages` schema, the buy UI, the concurrency integration tests, and the spike/same-user stress scenarios with `stress/verify.ts`. Phase 3 adds the orchestrated payment/shipping saga: `core/orderStateMachine.ts`, conditional order transitions, SQS `payment.requested`/`shipping.requested`/result messages, deterministic payment/shipping mocks with configurable failure rates, the payment-timeout sweeper, compensation through `release.lua`, `GET /admin/reconcile`, saga integration tests and the Floci broker contract test. Phase 4 adds `XAUTOCLAIM` reclaim and graceful shutdown, fail-closed 503 + `Retry-After` when Redis is down, Postgres retry with exponential backoff and jitter plus Redis status fallback, the `pnpm rebuild-redis` job, and `stress/chaos.sh`. Phase 5 adds nginx per-IP `limit_req` (JSON 429), the 1 s per-replica sold-out flag, `Cache-Control` on `/api/sale`, tuned Redis/Postgres pools and worker concurrency (4 API, 2 orchestrator, 2 payment replicas), Prometheus `/metrics` (request/latency, reserve outcomes, stream lag, DLQ depth), and `stress/soak.js` with recorded results.
+**All PLAN phases (0 to 6) are complete.** The walking skeleton runs end-to-end via `docker compose`: web → nginx → API → Redis stream → orchestrator → Postgres → SQS (Floci) → payment → shipping → back. Phase 1 adds the `sales` table, env seeding, the admin reset endpoint, `GET /api/sale` (250 ms cache), and the web status banner with a server-clock countdown. Phase 2 adds the atomic `reserve.lua`/`release.lua` scripts, `POST /api/purchases` with `Idempotency-Key`, `GET /api/purchases/:userId`, the Redis → Postgres reservation consumer, the `orders`/`saga_events`/`processed_messages` schema, the buy UI, the concurrency integration tests, and the spike/same-user stress scenarios with `stress/verify.ts`. Phase 3 adds the orchestrated payment/shipping saga: `core/orderStateMachine.ts`, conditional order transitions, SQS `payment.requested`/`shipping.requested`/result messages, deterministic payment/shipping mocks with configurable failure rates, the payment-timeout sweeper, compensation through `release.lua`, `GET /admin/reconcile`, saga integration tests and the Floci broker contract test. Phase 4 adds `XAUTOCLAIM` reclaim and graceful shutdown, fail-closed 503 + `Retry-After` when Redis is down, Postgres retry with exponential backoff and jitter plus Redis status fallback, the `pnpm rebuild-redis` job, and `stress/chaos.sh`. Phase 5 adds nginx per-IP `limit_req` (JSON 429), the 1 s per-replica sold-out flag, `Cache-Control` on `/api/sale`, tuned Redis/Postgres pools and worker concurrency (4 API, 2 orchestrator, 2 payment replicas), Prometheus `/metrics` (request/latency, reserve outcomes, stream lag, DLQ depth), and `stress/soak.js` with recorded results.
 
-Next is **PLAN Phase 6** (deliverables). Don't start a later phase until the current phase's "Verify" block passes.
+Phase 6 adds the full README, the architecture diagram (`doc/architecture.mmd`, `doc/architecture.png`) and the clean-clone run-through.
 
 ## Stack
 
@@ -32,9 +32,9 @@ Next is **PLAN Phase 6** (deliverables). Don't start a later phase until the cur
 apps/{api,orchestrator,payment,shipping,web}
 packages/{core,infra,config}
 infra/{docker-compose.yml,nginx.conf,init-queues.ts,migrations/}
-stress/          # k6 scripts + verify.ts
-scripts/         # e2e.ts, chaos.sh, rebuild-redis
-doc/             # SPEC.md, PLAN.md
+stress/          # k6 scripts, verify.ts, chaos.sh
+scripts/         # e2e.ts, stress.ts, rebuild-redis.ts
+doc/             # SPEC.md, PLAN.md, architecture.mmd + .png
 ```
 
 - `packages/core` holds pure domain logic, such as the state machine and envelopes. It does no I/O.

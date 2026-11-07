@@ -1,6 +1,4 @@
-export const QUEUE_NAMES = ['payment-requests', 'shipping-requests', 'order-events'] as const;
-
-export type QueueName = (typeof QUEUE_NAMES)[number];
+export type QueueName = 'payment-requests' | 'shipping-requests' | 'order-events';
 
 export interface BusMessage {
   id: string;

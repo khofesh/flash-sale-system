@@ -14,8 +14,8 @@ import {
   type ReservationStore,
   type SaleSnapshot,
 } from '@fss/infra';
-import type { AppMetrics } from './metrics.js';
-import { registerPurchaseRoutes } from './purchases.js';
+import type { AppMetrics } from './metrics.ts';
+import { registerPurchaseRoutes } from './purchases.ts';
 
 interface BuildAppDeps {
   redis: Redis;
@@ -265,7 +265,7 @@ export function buildApp({
             return reply.code(400).send({ code: 'VALIDATION_ERROR', message: error.message });
           }
           logger.error({ err: error, saleId: targetSaleId }, 'failed to reset sale');
-          return reply.code(503).send({ code: 'UNAVAILABLE' });
+          return reply.code(503).header('Retry-After', '1').send({ code: 'UNAVAILABLE' });
         }
 
         if (targetSaleId === saleId) {
