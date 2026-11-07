@@ -78,9 +78,9 @@ async function main(): Promise<void> {
     );
   }
 
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let view: PurchaseView | undefined;
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     const response = await fetch(`${baseUrl}/api/purchases/${encodeURIComponent(userId)}`);
     if (response.status === 404) {
       await sleep(200);
@@ -116,9 +116,9 @@ async function main(): Promise<void> {
     );
   }
 
-  const stockDeadline = Date.now() + 5_000;
+  const stockDeadline = performance.now() + 5_000;
   let after = (await (await fetch(`${baseUrl}/api/sale`)).json()) as SaleView;
-  while (after.remainingStock !== sale.remainingStock - 1 && Date.now() < stockDeadline) {
+  while (after.remainingStock !== sale.remainingStock - 1 && performance.now() < stockDeadline) {
     // /api/sale is cached for 250 ms per replica, so a read straight after the
     // purchase can still see the old stock.
     await sleep(200);

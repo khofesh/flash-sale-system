@@ -36,13 +36,13 @@ export async function verifyStack({
     const totalStock = await readTotalStock(pool, config.SALE_ID);
     // Chaos and soak wait for every saga: a reclaim alone takes XAUTOCLAIM's
     // 30 s idle time, and a soak leaves tens of thousands of orders behind.
-    const deadline = Date.now() + (timeoutMs ?? (requireOrders ? 300_000 : 45_000));
+    const deadline = performance.now() + (timeoutMs ?? (requireOrders ? 300_000 : 45_000));
     let report = await readReport(redis, pool, config.SALE_ID);
     let orders = await readOrderCounts(pool, config.SALE_ID);
 
     while (
       (!isDrained(report) || (requireOrders && orders.unfinished > 0)) &&
-      Date.now() < deadline
+      performance.now() < deadline
     ) {
       await sleep(500);
       report = await readReport(redis, pool, config.SALE_ID);

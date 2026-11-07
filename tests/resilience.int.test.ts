@@ -167,10 +167,10 @@ describe('resilience', () => {
   }
 
   async function waitForStatus(userId: string, expected: string): Promise<Record<string, unknown>> {
-    const deadline = Date.now() + 15_000;
+    const deadline = performance.now() + 15_000;
     let view: Record<string, unknown> = {};
 
-    while (Date.now() < deadline) {
+    while (performance.now() < deadline) {
       const response = await getPurchase(userId);
       if (response.statusCode === 200) {
         view = response.json();
@@ -788,8 +788,8 @@ class TcpProxy {
 }
 
 async function waitUntil(check: () => Promise<boolean>, what: string): Promise<void> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
     if (await check()) return;
     await sleep(25);
   }

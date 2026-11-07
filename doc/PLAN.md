@@ -24,7 +24,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
   | `pnpm lint` | ESLint + Prettier check |
   | `pnpm test` | Unit tests (no Docker) |
   | `pnpm test:int` | Integration tests (Testcontainers, needs Docker) |
-  | `pnpm stack:up` / `pnpm stack:down` | `podman-compose up -d --build --wait` / `down -v` |
+  | `pnpm stack:up` / `pnpm stack:down` | `docker compose up -d --build --wait` / `down -v` |
   | `pnpm e2e` | Scripted end-to-end check against the running stack |
   | `pnpm stress` | k6 + post-run verification |
   | `pnpm dev` | API + web in watch mode against compose infrastructure |
@@ -35,7 +35,7 @@ Every phase has a **Verify** block. A phase is done only when every step in it p
 
 ## Phase 0: Walking skeleton ("hello world" end-to-end)
 
-**Goal:** `podman-compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
+**Goal:** `docker compose up`, open the web page, type a name, click **Say hello**, and watch the message go through API → Redis → orchestrator → Postgres → payment → shipping, with a timeline showing every hop.
 
 ### 0.1 Repo scaffolding
 - [x] `pnpm-workspace.yaml`, root `package.json` with the scripts above, `tsconfig.base.json`, ESLint/Prettier config, `.editorconfig`, `.nvmrc` (`24`), `.gitignore`, `.env.example`.
@@ -78,7 +78,7 @@ pnpm e2e                                  # PASS, prints the hop timeline
 open http://localhost:8080                # manual: type name → timeline reaches DONE
 open http://localhost:4566/_floci/ui      # queues + DLQs exist and are empty
 pnpm stress -- smoke                      # thresholds green
-podman-compose -f ./infra/docker-compose.yml restart orchestrator && pnpm e2e   # survives a restart
+docker compose -f ./infra/docker-compose.yml restart orchestrator && pnpm e2e   # survives a restart
 pnpm stack:down
 ```
 
@@ -116,8 +116,8 @@ curl -si -X POST localhost:8080/admin/sale -H 'x-admin-token: nope' | head -1   
 sale '+1 min' '+2 min' 3000000000         # 400 VALIDATION_ERROR
 
 sale '-10 min' '-1 min'
-podman-compose -f ./infra/docker-compose.yml restart api && curl -s localhost:8080/readyz   # boots after the sale ended
-podman-compose -f ./infra/docker-compose.yml exec redis redis-cli DEL 'sale:{launch-2026}:stock'
+docker compose -f ./infra/docker-compose.yml restart api && curl -s localhost:8080/readyz   # boots after the sale ended
+docker compose -f ./infra/docker-compose.yml exec redis redis-cli DEL 'sale:{launch-2026}:stock'
 sleep 1; curl -si localhost:8080/api/sale | head -1   # 503: fails closed, stock not refilled
 pnpm stack:down
 ```
