@@ -77,8 +77,8 @@ describe('SQS broker contract (Floci)', () => {
       expect(received).toHaveLength(0);
 
       open = true;
-      const deadline = Date.now() + 10_000;
-      while (received.length === 0 && Date.now() < deadline) await sleep(50);
+      const deadline = performance.now() + 10_000;
+      while (received.length === 0 && performance.now() < deadline) await sleep(50);
       expect(received).toEqual([{ id: 1 }]);
     } finally {
       await stop();

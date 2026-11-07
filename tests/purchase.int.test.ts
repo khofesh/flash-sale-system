@@ -118,8 +118,8 @@ describe('purchases', () => {
 
   async function drainReservations(): Promise<void> {
     const { reservations } = saleRedisKeys(saleId);
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
+    const deadline = performance.now() + 10_000;
+    while (performance.now() < deadline) {
       if ((await redis.exists(reservations)) === 0) return;
       const groups = (await redis.xinfo('GROUPS', reservations)) as unknown[][];
       const busy = groups.some((fields) => {
@@ -164,10 +164,10 @@ describe('purchases', () => {
   }
 
   async function waitForStatus(userId: string, expected: string): Promise<Record<string, unknown>> {
-    const deadline = Date.now() + 15_000;
+    const deadline = performance.now() + 15_000;
     let view: Record<string, unknown> = {};
 
-    while (Date.now() < deadline) {
+    while (performance.now() < deadline) {
       const response = await getPurchase(userId);
       if (response.statusCode === 200) {
         view = response.json();
@@ -341,8 +341,8 @@ describe('purchases', () => {
     const store = new RedisReservationStore(redis, logger);
     expect((await store.reserve(saleId, 'alice', second)).status).toBe('RESERVED');
 
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline && (await redis.get(stock)) !== '2') await sleep(100);
+    const deadline = performance.now() + 5_000;
+    while (performance.now() < deadline && (await redis.get(stock)) !== '2') await sleep(100);
     expect(await redis.get(stock)).toBe('2');
 
     // A redelivery of the same entry is a no-op: no second INCR.

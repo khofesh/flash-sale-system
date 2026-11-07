@@ -263,8 +263,8 @@ function consumeReservations(
   const loop = (async () => {
     while (running) {
       try {
-        if (Date.now() - lastClaim >= claimIntervalMs) {
-          lastClaim = Date.now();
+        if (performance.now() - lastClaim >= claimIntervalMs) {
+          lastClaim = performance.now();
           // Reclaims entries left pending by crashed consumers (including a
           // previous incarnation of this one) and entries whose handling failed.
           const [next, claimed] = (await redis.xautoclaim(
@@ -594,9 +594,9 @@ function startPaymentSweeper(deps: OrchestratorDeps, reservations: ReservationSt
 
 /** Sleeps in small slices so a shutdown signal does not wait out a long backoff. */
 async function sleepWhile(ms: number, running: () => boolean): Promise<void> {
-  const deadline = Date.now() + ms;
+  const deadline = performance.now() + ms;
   while (running()) {
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     if (remaining <= 0) return;
     await sleep(Math.min(250, remaining));
   }

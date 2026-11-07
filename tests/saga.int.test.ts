@@ -185,10 +185,10 @@ describe('payment and shipping saga', () => {
     expected: string | string[],
   ): Promise<Record<string, unknown>> {
     const wanted = Array.isArray(expected) ? expected : [expected];
-    const deadline = Date.now() + 15_000;
+    const deadline = performance.now() + 15_000;
     let view: Record<string, unknown> = {};
 
-    while (Date.now() < deadline) {
+    while (performance.now() < deadline) {
       const response = await getPurchase(userId);
       if (response.statusCode === 200) {
         view = response.json();
@@ -225,8 +225,8 @@ describe('payment and shipping saga', () => {
   }
 
   async function waitUntil(check: () => Promise<boolean>, what: string): Promise<void> {
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
+    const deadline = performance.now() + 10_000;
+    while (performance.now() < deadline) {
       if (await check()) return;
       await sleep(25);
     }
@@ -335,8 +335,8 @@ describe('payment and shipping saga', () => {
       });
       await bus.publish('order-events', lateSuccess);
 
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
+      const deadline = performance.now() + 5_000;
+      while (performance.now() < deadline) {
         if (captured.some((message) => message.type === 'payment.refund_requested')) break;
         await sleep(25);
       }
