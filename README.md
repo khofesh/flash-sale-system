@@ -94,9 +94,7 @@ runtimes. On Apple Silicon every image used here has an arm64 build.
   The override is the socket path inside the Colima VM, which Ryuk mounts. `CONTAINER_SOCKET`
   keeps its `/var/run/docker.sock` default for the same reason.
 
-- **Docker Desktop.** Nothing else to do: the CLI, Compose and `/var/run/docker.sock` come with it.
-
-- **Podman machine.**
+- **Podman machine (tested)**
 
   ```bash
   brew install podman
@@ -111,6 +109,8 @@ runtimes. On Apple Silicon every image used here has an arm64 build.
   The helper path depends on how Podman was installed (`brew` puts it under `$(brew --prefix)/bin`).
   `.envrc` does not look for a Podman socket on macOS, so the `docker` CLI uses
   `/var/run/docker.sock` directly.
+
+- **Docker Desktop.** Nothing else to do: the CLI, Compose and `/var/run/docker.sock` come with it.
 
 Give the VM at least 4 CPUs and 8 GB: the stack runs 4 API replicas, and the spike and soak runs
 are CPU bound. The stress numbers below come from Linux and will be lower inside a macOS VM.
